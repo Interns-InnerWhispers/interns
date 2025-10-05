@@ -103,28 +103,29 @@ if (missing.length > 0) {
 
 let db;
 (async () => {
-    try {
-        const dbConfig = {
-            host: process.env.NODE_ENV === 'production' ? 'localhost' : process.env.DB_HOST,
-            user: process.env.DB_USER,
-            password: process.env.DB_PASSWORD,
-            database: process.env.DB_NAME,
-            port: process.env.DB_PORT || 3306,
-            waitForConnections: true,
-            connectionLimit: process.env.NODE_ENV === 'production' ? 5 : 10,
-            queueLimit: 0,
-            dateStrings: true,
-            timezone: '+05:30'
-        };
+  try {
+    const dbConfig = {
+      host: process.env.DB_HOST,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      port: process.env.DB_PORT || 3306,
+      waitForConnections: true,
+      connectionLimit: process.env.NODE_ENV === 'production' ? 5 : 10,
+      queueLimit: 0,
+      dateStrings: true,
+      timezone: '+05:30',
+    };
 
-        db = await mysql.createPool(dbConfig);
-        console.log('✅ Connected to MySQL (pool)');
+    db = await mysql.createPool(dbConfig);
+    console.log('✅ Connected to MySQL (pool)');
 
-        await initializeDatabase();
-    } catch (err) {
-        console.error('❌ DB Connection Error:', err.message);
-    }
+    await initializeDatabase();
+  } catch (err) {
+    console.error('❌ DB Connection Error:', err.message);
+  }
 })();
+
 
 // ✅ DB Initializer
 async function initializeDatabase() {
