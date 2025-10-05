@@ -180,7 +180,14 @@ app.use((err, req, res, next) => {
 
 
 
-
+function executeQuery(sql, params = []) {
+    return new Promise((resolve, reject) => {
+        db.query(sql, params, (err, results) => {
+            if (err) return reject(err);
+            resolve(results);
+        });
+    });
+}
 
 app.get('/health', async (req, res) => {
     try {
