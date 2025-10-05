@@ -823,7 +823,7 @@ app.post("/api/register", upload.single("profileImage"), async (req, res) => {
             return res.status(500).json({ error: 'Failed to save user' });
         }
 
-        if ((department || '').toLowerCase() === "intern") {
+        if ((department || '').toLowerCase() === "Intern") {
             try {
             await executeQuery(
                 `INSERT INTO ${process.env.DB_NAME ? `\`${process.env.DB_NAME}\`.` : ''}interns(intern_id, name, internrole, email, phone) VALUES (?, ?, ?, ?, ?)`,
