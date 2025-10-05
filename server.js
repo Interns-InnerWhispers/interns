@@ -22,31 +22,31 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ✅ CORS for Hostinger + your domains
 app.use(cors({
-    origin: function (origin, callback) {
-        const allowIf = (o) => {
-            if (!o) return true; // Postman, curl, server-to-server
-            try {
-                const url = new URL(o);
-                const host = url.hostname.toLowerCase();
-                return (
-                    host === 'localhost' ||
-                    host === '127.0.0.1' ||
-                    host.endsWith('.innerwhispers.com') ||
-                    host === 'innerwhispers.com' ||
-                    host === 'www.innerwhispers.com'
-                );
-            } catch {
-                return false;
-            }
-        };
-        if (allowIf(origin)) return callback(null, true);
-        return callback(new Error('Not allowed by CORS'));
-    },
-    methods: "GET,POST,PUT,DELETE,OPTIONS",
-    credentials: true,
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-    optionsSuccessStatus: 204
+  origin: function (origin, callback) {
+    const allowIf = (o) => {
+      if (!o) return true; // for Postman, curl, etc.
+      try {
+        const url = new URL(o);
+        const host = url.hostname.toLowerCase();
+        return (
+          host === 'localhost' ||
+          host === '127.0.0.1' ||
+          host === 'innerwhispers.in' ||
+          host === 'www.innerwhispers.in'
+        );
+      } catch {
+        return false;
+      }
+    };
+    if (allowIf(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  methods: "GET,POST,PUT,DELETE,OPTIONS",
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  optionsSuccessStatus: 204
 }));
+
 
 app.options('*', cors());
 app.set('trust proxy', 1); // trust proxy (important if behind nginx)
