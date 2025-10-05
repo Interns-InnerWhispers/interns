@@ -231,7 +231,7 @@ if (process.env.NODE_ENV === 'production') {
    🚀 Start Server
 ------------------------------- */
 
-const server = app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
 });
 
