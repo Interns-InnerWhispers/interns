@@ -8,7 +8,7 @@ const fs = require('fs');
 const multer = require('multer');
 const mysql = require('mysql2'); 
 require('dotenv').config();
-
+const bcrypt=require('bcrypt');
 const app = express();
 
 const PORT = process.env.PORT || 3006;
