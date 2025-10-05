@@ -710,7 +710,7 @@ app.post("/api/login", async (req, res) => {
             return res.status(401).json({ message: "Invalid password" });
         }
 
-        if (user.role === "Intern") {
+        if (user.role === "intern") {
             const internResults = await executeQuery(
                 "SELECT intern_id, name FROM interns WHERE email = ?", 
                 [email]
@@ -823,7 +823,7 @@ app.post("/api/register", upload.single("profileImage"), async (req, res) => {
             return res.status(500).json({ error: 'Failed to save user' });
         }
 
-        if ((department || '').toLowerCase() === "Intern") {
+        if ((department || '').toLowerCase() === "intern") {
             try {
             await executeQuery(
                 `INSERT INTO ${process.env.DB_NAME ? `\`${process.env.DB_NAME}\`.` : ''}interns(intern_id, name, internrole, email, phone) VALUES (?, ?, ?, ?, ?)`,
