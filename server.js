@@ -178,7 +178,7 @@ app.use((err, req, res, next) => {
    🚀 Start Server
 ------------------------------- */
 
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+
 
 
 
@@ -231,8 +231,8 @@ if (process.env.NODE_ENV === 'production') {
    🚀 Start Server
 ------------------------------- */
 
-const server = app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
 });
 
 // Add graceful shutdown
