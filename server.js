@@ -711,7 +711,7 @@ app.post("/api/login", async (req, res) => {
             return res.status(401).json({ message: "Invalid password" });
         }
 
-        if (user.role === "intern") {
+        if (user.role.toLowerCase() === "intern") {
             const internResults = await executeQuery(
                 "SELECT intern_id, name FROM interns WHERE email = ?", 
                 [email]
