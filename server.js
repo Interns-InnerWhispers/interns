@@ -22,7 +22,8 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ✅ CORS for Hostinger + your domains
 app.use(cors({
-  origin: function (origin, callback) {
+  origin: "*"
+     /*function (origin, callback) {
     const allowIf = (o) => {
       if (!o) return true; // for Postman, curl, etc.
       try {
@@ -40,7 +41,7 @@ app.use(cors({
     };
     if (allowIf(origin)) return callback(null, true);
     return callback(new Error('Not allowed by CORS'));
-  },
+  }*/,
   methods: "GET,POST,PUT,DELETE,OPTIONS",
   credentials: true,
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
