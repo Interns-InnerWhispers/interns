@@ -496,7 +496,7 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     check_out TIME NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (intern_id) REFERENCES interns(intern_id)
+    FOREIGN KEY (intern_id) REFERENCES Interns(intern_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -556,8 +556,8 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
         }
     });
     // Ensure missing columns exist (safety for older schema)
-    db.query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS status ENUM('Pending','Reviewed','Rejected') DEFAULT 'Pending'", () => {});
-    db.query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS uploaded_by ENUM('Intern','HR','Lead') DEFAULT 'Intern'", () => {});
+    db.query("ALTER TABLE Documents ADD COLUMN IF NOT EXISTS status ENUM('Pending','Reviewed','Rejected') DEFAULT 'Pending'", () => {});
+    db.query("ALTER TABLE Documents ADD COLUMN IF NOT EXISTS uploaded_by ENUM('Intern','HR','Lead') DEFAULT 'Intern'", () => {});
     const createTaskTable = `
     CREATE TABLE IF NOT EXISTS ${Q('Tasks')} (
     task_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -596,7 +596,7 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
   requested_at timestamp NOT NULL DEFAULT current_timestamp(),
   PRIMARY KEY (id),
   KEY intern_id (intern_id),
-  CONSTRAINT leave_requests_ibfk_1 FOREIGN KEY (intern_id) REFERENCES interns (intern_id) ON DELETE CASCADE
+  CONSTRAINT leave_requests_ibfk_1 FOREIGN KEY (intern_id) REFERENCES Interns (intern_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
  `;
@@ -713,7 +713,7 @@ app.post("/api/login", async (req, res) => {
 
         if (user.role.toLowerCase() === "intern") {
             const internResults = await executeQuery(
-                "SELECT intern_id, name FROM interns WHERE email = ?", 
+                "SELECT intern_id, name FROM Interns WHERE email = ?", 
                 [email]
             );
 
@@ -827,7 +827,7 @@ app.post("/api/register", upload.single("profileImage"), async (req, res) => {
         if ((department || '').toLowerCase() === "intern") {
             try {
             await executeQuery(
-                `INSERT INTO ${process.env.DB_NAME ? `\`${process.env.DB_NAME}\`.` : ''}interns(intern_id, name, internrole, email, phone) VALUES (?, ?, ?, ?, ?)`,
+                `INSERT INTO ${process.env.DB_NAME ? `\`${process.env.DB_NAME}\`.` : ''}Interns(intern_id, name, internrole, email, phone) VALUES (?, ?, ?, ?, ?)`,
                     [internid, fullname, internRole || null, email, ph || null]
                 );
             } catch (e) {
@@ -1093,7 +1093,7 @@ app.get('/api/gettasks/:intern_id', (req, res) => {
     console.log(intern_id)
     const query = `
         SELECT task_id, task_title, due_date, status, priority
-        FROM tasks
+        FROM Tasks
         WHERE intern_id = ?
         ORDER BY assigned_date DESC
     `;
@@ -1125,7 +1125,7 @@ app.post('/api/addtask', (req, res) => {
     const dueDate = new Date(due_date).toISOString().split("T")[0];
 
     const query = `
-        INSERT INTO tasks (intern_id, task_title, task_description, priority, status, assigned_date, due_date)
+        INSERT INTO Tasks (intern_id, task_title, task_description, priority, status, assigned_date, due_date)
         VALUES (?, ?, ?, ?, ?, ?, ?)
     `;
 
@@ -1152,7 +1152,7 @@ app.put('/api/changetask/:taskId', (req, res) => {
     }
 
     const query = `
-        UPDATE tasks
+        UPDATE Tasks
         SET status = ?
         WHERE task_id = ?
     `;
@@ -1179,7 +1179,7 @@ app.get('/api/reports', (req, res) => {
 
     let sql = `
       SELECT id, report_title, report_description, file_path, status, submitted_at, due_date 
-      FROM reports 
+      FROM Reports 
       WHERE intern_id = ?
     `;
     const params = [intern_id];
@@ -1223,7 +1223,7 @@ app.post('/api/reports/upload', upload.single('file'), (req, res) => {
 
     const filePath = 'uploads/' + req.file.filename;
     const sql = `
-      INSERT INTO reports (intern_id, report_title, report_description, file_path, status, due_date, submitted_at)
+      INSERT INTO Reports (intern_id, report_title, report_description, file_path, status, due_date, submitted_at)
       VALUES (?, ?, ?, ?, 'Pending', ?, NOW())
     `;
     db.query(sql, [intern_id, report_title, report_description || null, filePath, due_date || null], (err) => {
@@ -1239,7 +1239,7 @@ app.post('/api/reports/upload', upload.single('file'), (req, res) => {
   // Download a report file by report ID
 app.get('/api/reports/download/:id', (req, res) => {
     const id = req.params.id;
-    db.query('SELECT report_title, file_path FROM reports WHERE id = ?', [id], (err, rows) => {
+    db.query('SELECT report_title, file_path FROM Reports WHERE id = ?', [id], (err, rows) => {
       if (err) return res.status(500).json({ error: 'Failed to fetch report' });
       if (rows.length === 0) return res.status(404).json({ error: 'Report not found' });
       const { file_path, report_title } = rows[0];
@@ -1259,7 +1259,7 @@ app.get('/api/reports/download/:id', (req, res) => {
         return res.status(400).json({ error: 'Invalid status' });
       }
   
-      const sql = `UPDATE reports SET status = ?, reviewed_at = NOW() WHERE id = ?`;
+      const sql = `UPDATE Reports SET status = ?, reviewed_at = NOW() WHERE id = ?`;
   const [result] = await dbp().query(sql, [status, id]);
   
       if (result.affectedRows === 0) return res.status(404).json({ error: 'Report not found' });
@@ -1304,7 +1304,7 @@ app.post('/api/submitreport', upload.single('reportFile'), (req, res) => {
     const filePath = req.file.path;
 
     const query = `
-        INSERT INTO reports (intern_id, report_title,report_description, file_path)
+        INSERT INTO Reports (intern_id, report_title,report_description, file_path)
         VALUES (?, ?, ?,?)
     `;
 
@@ -1449,7 +1449,7 @@ function formatTimeTo12Hour(timeStr) {
       const rows = await new Promise((resolve, reject) => {
         db.query(
           `SELECT attendance_date, status, check_in, check_out
-           FROM attendance
+           FROM Attendance
            WHERE intern_id = ? AND attendance_date BETWEEN ? AND ?`,
           [intern_id, startDate, endDate],
           (err, results) => {
@@ -1492,7 +1492,7 @@ function formatTimeTo12Hour(timeStr) {
       // Check if attendance record exists for today
       const rows = await new Promise((resolve, reject) => {
         db.query(
-          'SELECT * FROM attendance WHERE intern_id = ? AND attendance_date = ?',
+          'SELECT * FROM Attendance WHERE intern_id = ? AND attendance_date = ?',
           [intern_id, todayStr],
           (err, results) => {
             if (err) reject(err);
@@ -1505,7 +1505,7 @@ function formatTimeTo12Hour(timeStr) {
         // First check-in: insert record with check_in = now
         await new Promise((resolve, reject) => {
           db.query(
-            'INSERT INTO attendance (intern_id, attendance_date, status, check_in) VALUES (?, ?, ?, ?)',
+            'INSERT INTO Attendance (intern_id, attendance_date, status, check_in) VALUES (?, ?, ?, ?)',
             [intern_id, todayStr, 'Present', nowTime],
             (err, results) => {
               if (err) reject(err);
@@ -1521,7 +1521,7 @@ function formatTimeTo12Hour(timeStr) {
           // Check-out: update record with check_out = now
           await new Promise((resolve, reject) => {
             db.query(
-              'UPDATE attendance SET check_out = ? WHERE id = ?',
+              'UPDATE Attendance SET check_out = ? WHERE id = ?',
               [nowTime, attendance.id],
               (err, results) => {
                 if (err) reject(err);
@@ -1557,8 +1557,8 @@ function formatTimeTo12Hour(timeStr) {
         db.query(
           `SELECT i.name as intern_name, i.intern_id, 
               ROUND(SUM(a.status = 'Present') / ? * 100, 2) as attendance_percentage
-           FROM interns i
-           LEFT JOIN attendance a 
+           FROM Interns i
+           LEFT JOIN Attendance a 
              ON i.intern_id = a.intern_id 
              AND a.attendance_date BETWEEN ? AND ?
            GROUP BY i.intern_id
@@ -1607,7 +1607,7 @@ function formatTimeTo12Hour(timeStr) {
               COUNT(*) AS total_tasks,
               SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) AS completed_tasks,
               AVG(TIMESTAMPDIFF(MINUTE, assigned_date, due_date)) AS avg_completion_minutes
-           FROM tasks
+           FROM Tasks
            WHERE intern_id = ?`,
           [internId],
           (err, results) => (err ? reject(err) : resolve(results))
@@ -1627,7 +1627,7 @@ function formatTimeTo12Hour(timeStr) {
         db.query(
           `SELECT WEEK(assigned_date) AS week_number, 
                   SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) AS completed_tasks
-           FROM tasks
+           FROM Tasks
            WHERE intern_id = ? AND assigned_date >= DATE_SUB(CURDATE(), INTERVAL 4 WEEK)
            GROUP BY week_number
            ORDER BY week_number`,
@@ -1648,7 +1648,7 @@ function formatTimeTo12Hour(timeStr) {
       const feedbackRows = await new Promise((resolve, reject) => {
         db.query(
           `SELECT report_title AS project, report_description AS comments, submitted_at AS created_at
-           FROM reports
+           FROM Reports
            WHERE intern_id = ?
            ORDER BY submitted_at DESC
            LIMIT 10`,
@@ -1688,8 +1688,8 @@ function formatTimeTo12Hour(timeStr) {
                    THEN 0 
                    ELSE ROUND(SUM(t.status = 'Completed') / COUNT(t.task_id) * 100, 2) 
               END AS completion_rate
-           FROM interns i
-           LEFT JOIN tasks t ON i.intern_id = t.intern_id
+           FROM Interns i
+           LEFT JOIN Tasks t ON i.intern_id = t.intern_id
            GROUP BY i.intern_id
            ORDER BY completion_rate DESC`,
           (err, results) => (err ? reject(err) : resolve(results))
@@ -1781,7 +1781,7 @@ app.post('/api/leave-requests', async (req, res) => {
     if (!internId) return res.status(400).json({ error: 'intern_id query parameter is required' });
   
     let sql = `SELECT id, doc_title, upload_date, status, file_path 
-               FROM documents WHERE intern_id = ?`;
+               FROM Documents WHERE intern_id = ?`;
     const params = [internId];
   
     if (req.query.status) {
@@ -1819,7 +1819,7 @@ app.post('/api/leave-requests', async (req, res) => {
     if (!internId) return res.status(400).json({ error: 'intern_id is required' });
   
     const sql = `SELECT id, doc_title, upload_date, status, file_path
-                 FROM documents
+                 FROM Documents
                  WHERE intern_id = ? AND uploaded_by = 'Intern'
                  ORDER BY upload_date DESC`;
   
@@ -1838,7 +1838,7 @@ app.post('/api/leave-requests', async (req, res) => {
     if (!internId) return res.status(400).json({ error: 'intern_id is required' });
   
     const sql = `SELECT id, doc_title, upload_date, status, file_path
-                 FROM documents
+                 FROM Documents
                  WHERE intern_id = ? AND uploaded_by != 'Intern'
                  ORDER BY upload_date DESC`;
   
@@ -1872,7 +1872,7 @@ app.post('/api/leave-requests', async (req, res) => {
       return res.status(400).json({ error: "No file or link provided" });
     }
   
-    const sql = `INSERT INTO documents 
+    const sql = `INSERT INTO Documents 
                  (intern_id, doc_title, upload_date, status, file_path, uploaded_by) 
                  VALUES (?, ?, NOW(), 'Pending', ?, 'Intern')`;
   
@@ -1890,7 +1890,7 @@ app.post('/api/leave-requests', async (req, res) => {
   app.get('/api/documents/download/:id', (req, res) => {
     const docId = req.params.id;
   
-    const sql = `SELECT doc_title, file_path FROM documents WHERE id = ?`;
+    const sql = `SELECT doc_title, file_path FROM Documents WHERE id = ?`;
     db.query(sql, [docId], (err, rows) => {
       if (err) {
         console.error('Failed to fetch document:', err);
