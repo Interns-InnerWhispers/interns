@@ -1,4 +1,4 @@
-// Load environment variables
+  // Load environment variables
 const express = require('express');
 const helmet = require('helmet');
 const compression = require('compression');
@@ -496,7 +496,7 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     check_out TIME NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (intern_id) REFERENCES Interns(intern_id)
+    FOREIGN KEY (intern_id) REFERENCES interns(intern_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
