@@ -785,7 +785,7 @@ app.post("/api/register", upload.single("profileImage"), async (req, res) => {
         if (!username || !email || !password || !fullname) {
             return res.status(400).json({ error: "Missing required fields" });
         }
-
+        console.log(department);
         const hashed_pass = await bcrypt.hash(password, 10);
 
         let picpath = null;
