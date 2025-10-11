@@ -824,17 +824,19 @@ app.post("/api/register", upload.single("profileImage"), async (req, res) => {
             return res.status(500).json({ error: 'Failed to save user' });
         }
 
-        if ((department) === "Intern") {
-            try {
-            await executeQuery(
-                `INSERT INTO ${process.env.DB_NAME ? `\`${process.env.DB_NAME}\`.` : ''}Interns(intern_id, name, internrole, email, phone) VALUES (?, ?, ?, ?, ?)`,
-                    [internid, fullname, internRole || null, email, ph || null]
-                );
-            } catch (e) {
-                console.error('Intern insert failed:', e);
-                // Don't hard fail user registration on intern row failure
-            }
-        }
+        if (department && department.trim().toLowerCase() === "intern") {
+    try {
+        await executeQuery(
+            `INSERT INTO ${process.env.DB_NAME ? `\`${process.env.DB_NAME}\`.` : ''}Interns (intern_id, name, internrole, email, phone)
+             VALUES (?, ?, ?, ?, ?)`,
+            [internid, fullname, internRole || null, email, ph || null]
+        );
+    } catch (e) {
+        console.error('Intern insert failed:', e);
+        // Don't hard fail user registration on intern row failure
+    }
+}
+
 
         res.json({ ok: true, message: "Registration successful" });
     } catch (err) {
