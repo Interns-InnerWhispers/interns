@@ -1067,21 +1067,42 @@ app.post('/api/checkout', (req, res) => {
     return res.status(400).json({ message: 'intern_id is required' });
   }
 
+  // Check if already checked out
   db.query(
-    'UPDATE Attendance SET check_out = ? WHERE intern_id = ? AND attendance_date = ?',
-    [checkOutTime, intern_id, attendance_date],
-    (err, result) => {
+    'SELECT check_out FROM Attendance WHERE intern_id = ? AND attendance_date = ?',
+    [intern_id, attendance_date],
+    (err, results) => {
       if (err) {
         console.error('DB error:', err);
         return res.status(500).json({ message: 'DB error', error: err.message });
       }
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ message: 'No attendance record found for today to update' });
+
+      if (results.length === 0) {
+        return res.status(404).json({ message: 'No attendance record found for today' });
       }
-      res.json({ message: 'Checked out successfully', check_out: checkOutTime });
+
+      const record = results[0];
+      if (record.check_out) {
+        return res.status(400).json({ message: 'Already checked out', check_out: record.check_out });
+      }
+
+      // Proceed with checkout update
+      db.query(
+        'UPDATE Attendance SET check_out = ? WHERE intern_id = ? AND attendance_date = ?',
+        [checkOutTime, intern_id, attendance_date],
+        (err, result) => {
+          if (err) {
+            console.error('DB error:', err);
+            return res.status(500).json({ message: 'DB error', error: err.message });
+          }
+
+          res.json({ message: 'Checked out successfully', check_out: checkOutTime });
+        }
+      );
     }
   );
 });
+
 
 // GET all tasks
 app.get("/api/tasks/all", async (req, res) => {
