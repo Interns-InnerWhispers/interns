@@ -1049,14 +1049,43 @@ app.get('/api/attendance/monthly', async (req, res) => {
 });
 
 
-//intern chekout
-app.post('/api/checkout', (req, res) => {
+// Helper to get IST date string (YYYY-MM-DD)
+function getTodayIST() {
+  const now = new Date();
+  const offset = 5.5 * 60; // 5 hours 30 minutes in minutes
+  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const ist = new Date(utc + offset * 60000);
+  return ist.toISOString().slice(0, 10);
+}
+
+app.post('/api/checkout', async (req, res) => {
+  try {
     const { intern_id, check_out } = req.body;
-    db.query('UPDATE Attendance SET check_out = ? WHERE intern_id = ? AND attendance_date = ?', [check_out, intern_id, getTodayIST()], (err, results) => {
-        if (err) res.status(500).json({ message: "DB error", error: err });
-        else res.json({ message: "Checked out successfully" });
-        console.log(results);
-    });
+
+    if (!intern_id) return res.status(400).json({ message: 'intern_id is required' });
+
+    // Use current date in IST
+    const attendance_date = getTodayIST();
+
+    // If check_out time not provided, use current server time in HH:mm:ss
+    const checkOutTime = check_out || new Date().toISOString().slice(11, 19);
+
+    // Use parameterized query with async/await
+    const [result] = await db.execute(
+      'UPDATE Attendance SET check_out = ? WHERE intern_id = ? AND attendance_date = ?',
+      [checkOutTime, intern_id, attendance_date]
+    );
+
+    if (result.affectedRows === 0) {
+      // No row updated, probably no attendance record for today
+      return res.status(404).json({ message: 'No attendance record found for today to update' });
+    }
+
+    res.json({ message: 'Checked out successfully', check_out: checkOutTime });
+  } catch (err) {
+    console.error('Checkout error:', err);
+    res.status(500).json({ message: 'DB error', error: err.message });
+  }
 });
 
 // GET all tasks
