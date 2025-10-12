@@ -1103,6 +1103,26 @@ app.post('/api/checkout', (req, res) => {
   );
 });
 
+app.get('/api/attendance-status/:intern_id', (req, res) => {
+  const intern_id = req.params.intern_id;
+  const attendance_date = getTodayIST();
+
+  db.query(
+    'SELECT check_out FROM Attendance WHERE intern_id = ? AND attendance_date = ?',
+    [intern_id, attendance_date],
+    (err, results) => {
+      if (err) {
+        console.error('DB error:', err);
+        return res.status(500).json({ message: 'DB error', error: err.message });
+      }
+      if (results.length === 0) {
+        return res.status(404).json({ message: 'No attendance record found for today' });
+      }
+      res.json(results[0]);
+    }
+  );
+});
+
 
 // GET all tasks
 app.get("/api/tasks/all", async (req, res) => {
