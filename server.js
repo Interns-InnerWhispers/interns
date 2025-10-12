@@ -721,11 +721,18 @@ app.post("/api/login", async (req, res) => {
                 return res.status(401).json({ message: "Intern not found" });
             }
 
-            await executeQuery(
-                `INSERT INTO Attendance (intern_id, attendance_date, status, check_in) 
-                 VALUES (?, CURDATE(), 'Present', CURTIME())`,
-                [internResults[0].intern_id]
-            );
+            const now = new Date();
+const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)); // convert UTC → IST
+
+const date = istNow.toISOString().slice(0, 10); // YYYY-MM-DD
+const time = istNow.toTimeString().slice(0, 8); // HH:MM:SS
+
+await executeQuery(
+  `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
+   VALUES (?, ?, 'Present', ?)`,
+  [internResults[0].intern_id, date, time]
+);
+
 
             const token = encodeToken({ 
                 id: user.id, 
