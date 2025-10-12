@@ -711,6 +711,7 @@ app.post("/api/login", async (req, res) => {
             return res.status(401).json({ message: "Invalid password" });
         }
 
+        // If Intern — handle attendance
         if (user.role.toLowerCase() === "intern") {
             const internResults = await executeQuery(
                 "SELECT intern_id, name FROM Interns WHERE email = ?", 
@@ -721,36 +722,50 @@ app.post("/api/login", async (req, res) => {
                 return res.status(401).json({ message: "Intern not found" });
             }
 
+            const internId = internResults[0].intern_id;
+
+            // Get current IST date & time
             const now = new Date();
-const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)); // convert UTC → IST
+            const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)); // Convert UTC → IST
+            const date = istNow.toISOString().slice(0, 10); // YYYY-MM-DD
+            const time = istNow.toTimeString().slice(0, 8); // HH:MM:SS
 
-const date = istNow.toISOString().slice(0, 10); // YYYY-MM-DD
-const time = istNow.toTimeString().slice(0, 8); // HH:MM:SS
+            // ✅ Check if attendance already exists for today
+            const existingAttendance = await executeQuery(
+                `SELECT * FROM Attendance WHERE intern_id = ? AND attendance_date = ?`,
+                [internId, date]
+            );
 
-await executeQuery(
-  `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
-   VALUES (?, ?, 'Present', ?)`,
-  [internResults[0].intern_id, date, time]
-);
+            if (existingAttendance.length === 0) {
+                // Insert only if not present already
+                await executeQuery(
+                    `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
+                     VALUES (?, ?, 'Present', ?)`,
+                    [internId, date, time]
+                );
+            }
 
-
+            // Create token
             const token = encodeToken({ 
                 id: user.id, 
                 name: user.full_name, 
                 role: user.role, 
-                intern_id: internResults[0].intern_id 
+                intern_id: internId 
             });
+
             return res.json({ token });
         }
 
+        // For non-intern users
         const token = encodeToken({ id: user.id, role: user.role });
         return res.json({ token });
 
     } catch (err) {
-        console.error('Login error:', err);
+        console.error("Login error:", err);
         res.status(500).json({ message: "Server error", error: err.message });
     }
 });
+
 
 app.post('/api/forgotpass', (req, res) => {
     const { email, npass } = req.body;
