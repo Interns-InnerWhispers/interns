@@ -63,7 +63,7 @@ app.set('trust proxy', 1); // trust proxy (important if behind nginx)
    📂 File Uploads (Multer)
 ------------------------------- */
 // Ensure upload folder exists
-const uploadDir = process.env.NODE_ENV === 'production'
+/*const uploadDir = process.env.NODE_ENV === 'production'
     ? '/home/u841735361/domains/innerwhispers.in/public_html/uploads'
     : path.join(__dirname, "uploads");
 
@@ -97,7 +97,9 @@ const fileFilter = (req, file, cb) => {
     else cb(new Error('Only images and PDF allowed!'));
 };
 
-const upload = multer({ storage, fileFilter });
+const upload = multer({ storage, fileFilter });*/
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 /* ------------------------------
    🗄️ Database Setup
