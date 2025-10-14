@@ -83,21 +83,6 @@ const uploadMembersDir = process.env.NODE_ENV === 'production'
 });
 
 // Storage config
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => {
-        cb(null, file.fieldname + '-' + Date.now() + path.extname(file.originalname));
-    },
-});
-
-// File filter (images/pdf only, check mimetype)
-const fileFilter = (req, file, cb) => {
-    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'application/pdf'];
-    if (allowedTypes.includes(file.mimetype)) cb(null, true);
-    else cb(new Error('Only images and PDF allowed!'));
-};
-
-const upload = multer({ storage, fileFilter });*/
 
 const upload = multer({ storage: multer.memoryStorage() });
 
