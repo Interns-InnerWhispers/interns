@@ -1294,56 +1294,32 @@ app.get('/api/reports', (req, res) => {
   
   // POST /api/reports/upload
   // Upload a new report file
-app.post('/api/reports/upload', upload.single('file'), async (req, res) => {
+app.post('/api/reports/upload', async (req, res) => {
   try {
-    const { intern_id, report_title, report_description, due_date } = req.body;
-    if (!intern_id || !report_title) {
+    const { intern_id, report_title, report_description, due_date, file_path } = req.body;
+
+    if (!intern_id || !report_title)
       return res.status(400).json({ error: 'intern_id and report_title are required' });
-    }
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ error: 'Report file is required' });
-    }
 
-    const originalName = req.file.originalname.split('.').slice(0, -1).join('.');
-
-    // Promisify upload_stream with debugging
-    const uploadToCloudinary = () =>
-      new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          {
-            folder: `Intern/${intern_id}/reports`,
-            public_id: originalName,
-            resource_type: 'image'
-          },
-          (error, result) => {
-            if (error) {
-              console.error('Cloudinary upload error:', error);
-              return reject(error);
-            }
-            resolve(result);
-          }
-        );
-        streamifier.createReadStream(req.file.buffer).pipe(stream);
-      });
-
-    const result = await uploadToCloudinary();
-
-    const fileUrl = result.secure_url;
+    if (!file_url)
+      return res.status(400).json({ error: 'file_url is required' });
 
     const sql = `
       INSERT INTO Reports (intern_id, report_title, report_description, file_path, status, due_date, submitted_at)
       VALUES (?, ?, ?, ?, 'Pending', ?, NOW())
     `;
 
-    db.query(sql, [intern_id, report_title, report_description || null, fileUrl, due_date || null], (err) => {
-      if (err) {
-        console.error('Database insert error:', err);
-        return res.status(500).json({ error: 'Failed to save report data' });
-      }
-      res.json({ message: 'Report uploaded successfully', fileUrl });
-    });
+    await db.query(sql, [
+      intern_id,
+      report_title,
+      report_description || null,
+      file_path,
+      due_date || null,
+    ]);
+
+    res.json({ message: 'Report uploaded successfully', fileUrl: file_url });
   } catch (err) {
-    console.error('Server error:', err);
+    console.error(err);
     res.status(500).json({ error: 'Failed to upload report' });
   }
 });
