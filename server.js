@@ -1312,38 +1312,53 @@ app.get('/api/reports', (req, res) => {
 app.post('/api/reports/upload', upload.single('file'), async (req, res) => {
   try {
     const { intern_id, report_title, report_description, due_date } = req.body;
-    if (!intern_id || !report_title)
+    if (!intern_id || !report_title) {
       return res.status(400).json({ error: 'intern_id and report_title are required' });
-
-    if (!req.file)
+    }
+    if (!req.file || !req.file.buffer) {
       return res.status(400).json({ error: 'Report file is required' });
+    }
 
-    // Upload file buffer directly to Cloudinary in 'reports/{intern_id}' folder
     const originalName = req.file.originalname.split('.').slice(0, -1).join('.');
-    const result = await new Promise((resolve, reject) => {
-      const uploadStream = cloudinary.uploader.upload_stream(
-        {
-          folder: `Intern/${intern_id}/reports`,
-          public_id: originalName,
-          resource_type: 'raw' // raw used for documents like pdf, docx etc.
-        },
-        (error, result) => (error ? reject(error) : resolve(result))
-      );
-      streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
-    });
 
-    const fileUrl = result.secure_url; // Cloudinary file URL to save in DB
+    // Promisify upload_stream with debugging
+    const uploadToCloudinary = () =>
+      new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            folder: `Intern/${intern_id}/reports`,
+            public_id: originalName,
+            resource_type: 'raw'
+          },
+          (error, result) => {
+            if (error) {
+              console.error('Cloudinary upload error:', error);
+              return reject(error);
+            }
+            resolve(result);
+          }
+        );
+        streamifier.createReadStream(req.file.buffer).pipe(stream);
+      });
+
+    const result = await uploadToCloudinary();
+
+    const fileUrl = result.secure_url;
 
     const sql = `
       INSERT INTO Reports (intern_id, report_title, report_description, file_path, status, due_date, submitted_at)
       VALUES (?, ?, ?, ?, 'Pending', ?, NOW())
     `;
 
-    await db.query(sql, [intern_id, report_title, report_description || null, fileUrl, due_date || null]);
-
-    res.json({ message: 'Report uploaded successfully', fileUrl });
+    db.query(sql, [intern_id, report_title, report_description || null, fileUrl, due_date || null], (err) => {
+      if (err) {
+        console.error('Database insert error:', err);
+        return res.status(500).json({ error: 'Failed to save report data' });
+      }
+      res.json({ message: 'Report uploaded successfully', fileUrl });
+    });
   } catch (err) {
-    console.error(err);
+    console.error('Server error:', err);
     res.status(500).json({ error: 'Failed to upload report' });
   }
 });
