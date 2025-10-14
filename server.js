@@ -82,7 +82,7 @@ const uploadMembersDir = process.env.NODE_ENV === 'production'
     }
 });
 
-// Storage config
+// Storage config*/
 
 const upload = multer({ storage: multer.memoryStorage() });
 
