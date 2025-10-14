@@ -1941,58 +1941,43 @@ app.post('/api/leave-requests', async (req, res) => {
   });
   
 // ------------------- UPLOAD document (file or link) -------------------
-app.post('/api/documents/upload', upload.single("file"), async (req, res) => {
-    try {
-      console.log("BODY:", req.body);
-      console.log("FILE:", req.file);
-  
-      const { intern_id, customFileName, fileLink } = req.body;
-      if (!intern_id) return res.status(400).json({ error: "intern_id is required" });
-  
-      let filename = null;
-      let filePath = null;
-  
-      if (req.file) {
-        // Use custom filename or original name
-        filename = customFileName?.trim() || req.file.originalname;
-  
-        // Upload file buffer to Cloudinary under documents/{intern_id}
-        const result = await new Promise((resolve, reject) => {
-          const uploadStream = cloudinary.uploader.upload_stream(
-            {
-              folder: `Interns/${intern_id}/documents`,
-              public_id: filename.split('.').slice(0, -1).join('.'),
-              resource_type: 'raw'
-            },
-            (error, result) => (error ? reject(error) : resolve(result))
-          );
-          streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
-        });
-  
-        filePath = result.secure_url; // URL from Cloudinary
-      } else if (fileLink && fileLink.trim() !== "") {
-        filePath = fileLink.trim();
-        filename = customFileName?.trim() || "Link";
-      } else {
-        return res.status(400).json({ error: "No file or link provided" });
-      }
-  
-      const sql = `INSERT INTO Documents 
-                   (intern_id, doc_title, upload_date, status, file_path, uploaded_by) 
-                   VALUES (?, ?, NOW(), 'Pending', ?, 'Intern')`;
-  
-      db.query(sql, [intern_id, filename, filePath], (err, result) => {
-        if (err) {
-          console.error("Failed to save document:", err);
-          return res.status(500).json({ error: "Failed to upload document" });
-        }
-        res.json({ message: "✅ Document uploaded successfully", filePath });
-      });
-    } catch (err) {
-      console.error("Server error uploading document:", err);
-      return res.status(500).json({ error: "Server error" });
+app.post('/api/documents/upload', async (req, res) => {
+  try {
+    const { intern_id, customFileName, fileUrl } = req.body;
+
+    // Validation
+    if (!intern_id) {
+      return res.status(400).json({ error: "intern_id is required" });
     }
+
+    if (!fileUrl || fileUrl.trim() === "") {
+      return res.status(400).json({ error: "No file URL provided" });
+    }
+
+    // Determine filename
+    const filename = customFileName?.trim() || fileUrl.split('/').pop() || "Document";
+
+    // Insert into database
+    const sql = `
+      INSERT INTO Documents 
+      (intern_id, doc_title, upload_date, status, file_path, uploaded_by) 
+      VALUES (?, ?, NOW(), 'Pending', ?, 'Intern')
+    `;
+
+    db.query(sql, [intern_id, filename, fileUrl], (err, result) => {
+      if (err) {
+        console.error("Failed to save document:", err);
+        return res.status(500).json({ error: "Failed to upload document" });
+      }
+      res.json({ message: "✅ Document uploaded successfully", filePath: fileUrl });
+    });
+
+  } catch (err) {
+    console.error("Server error uploading document:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
 });
+
   
   
   // ------------------- DOWNLOAD document by ID -------------------
