@@ -10,7 +10,14 @@ const mysql = require('mysql2');
 require('dotenv').config();
 const bcrypt=require('bcrypt');
 const app = express();
+const streamifier = require('streamifier');
+const cloudinary = require('cloudinary').v2;
 
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUDNAME,
+    api_key: process.env.CLOUDINARY_API,
+    api_secret: process.env.CLOUDINARY_APISEC
+});
 const PORT = process.env.PORT || 3006;
 /* ------------------------------
    🔐 Security & Middleware
@@ -803,67 +810,62 @@ app.post('/api/forgotpass', (req, res) => {
 //for register
 app.post("/api/register", upload.single("profileImage"), async (req, res) => {
     try {
+        console.log(req.body);
+
+        // Get fields from form
         const { username, email, password, fullname, ph, department, internRole, internid } = req.body;
-        if (!username || !email || !password || !fullname) {
-            return res.status(400).json({ error: "Missing required fields" });
-        }
-        console.log(department);
-        const hashed_pass = await bcrypt.hash(password, 10);
 
-        let picpath = null;
-        if (req.file) {
-            // Ensure members dir and move file
-            const extension = path.extname(req.file.originalname) || '.png';
-            picpath = `members/${username}${extension}`;
-            const newPath = path.join(
-                process.env.NODE_ENV === 'production' ? uploadMembersDir : path.join(__dirname, 'members'),
-                `${username}${extension}`
+        // Hash password
+        const hashed_pass = bcrypt.hashSync(password, 10);
+
+        // Handle uploaded file
+        if (!req.file) {
+            return res.status(400).json({ error: "Profile image is required" });
+        }
+        console.log(department)
+
+        // Upload profile pic to Cloudinary under sample/{username}/profile_pic
+        const result = await new Promise((resolve, reject) => {
+            const uploadStream = cloudinary.uploader.upload_stream(
+                {
+                    folder: `Interns/${internid}`,
+                    public_id: 'profile_pic',
+                    resource_type: 'image',
+                    overwrite: true
+                },
+                (error, result) => (error ? reject(error) : resolve(result))
             );
-            try {
-                if (!fs.existsSync(path.dirname(newPath))) {
-                    fs.mkdirSync(path.dirname(newPath), { recursive: true, mode: 0o755 });
-                }
-                await fs.promises.rename(req.file.path, newPath);
-            } catch (e) {
-                console.error('Failed to move profile image:', e);
-                // Do not fail registration if image move fails
-                picpath = null;
+            streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
+        });
+
+        const picUrl = result.secure_url;
+        console.log('Cloudinary profile pic URL:', picUrl);
+
+        // Insert user data into DB with profile pic URL instead of local path
+        const sql = `
+        INSERT INTO users (username, email, password_hash, full_name, phone, role, profile_image)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `;
+
+        db.query(sql, [username, email, hashed_pass, fullname, ph, department, picUrl], (err, result) => {
+            if (err) {
+                console.log(err);
+                return res.status(500).json({ error: "DB insert failed", details: err });
             }
-        }
-
-        // Insert user and catch duplicate errors explicitly
-        try {
-            await executeQuery(
-                `INSERT INTO ${process.env.DB_NAME ? `\`${process.env.DB_NAME}\`.` : ''}users (username, email, password_hash, full_name, phone, role, profile_image) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                [username, email, hashed_pass, fullname, ph || null, department || 'patient', picpath]
-            );
-        } catch (e) {
-            if (e && e.code === 'ER_DUP_ENTRY') {
-                return res.status(409).json({ error: 'User already exists (email or username)' });
+            if (department == "Intern") {
+                const mysql = 'insert into Interns(intern_id,name,internrole,email,phone) values (?,?,?,?,?)';
+                db.query(mysql, [internid, fullname, internRole, email, ph], (err, result) => {
+                    if (err) {
+                        console.log(err)
+                        return res.status(500).json({ error: "DB insert failed", details: err });
+                    }
+                });
             }
-            console.error('User insert failed:', e);
-            return res.status(500).json({ error: 'Failed to save user' });
-        }
-
-        if (department && department.trim().toLowerCase() === "intern") {
-    try {
-        await executeQuery(
-            `INSERT INTO ${process.env.DB_NAME ? `\`${process.env.DB_NAME}\`.` : ''}Interns (intern_id, name, internrole, email, phone)
-             VALUES (?, ?, ?, ?, ?)`,
-            [internid, fullname, internRole || null, email, ph || null]
-        );
-    } catch (e) {
-        console.error('Intern insert failed:', e);
-        // Don't hard fail user registration on intern row failure
-    }
-}
-
-
-        res.json({ ok: true, message: "Registration successful" });
+            res.json({ ok: true, message: "Registration successful" });
+        });
     } catch (err) {
-        console.error('Registration error:', { body: req.body, error: err });
-        res.status(500).json({ error: "Server error", details: err.message });
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
     }
 });
 
