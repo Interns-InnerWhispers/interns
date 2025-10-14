@@ -1309,24 +1309,44 @@ app.get('/api/reports', (req, res) => {
   
   // POST /api/reports/upload
   // Upload a new report file
-app.post('/api/reports/upload', upload.single('file'), (req, res) => {
+app.post('/api/reports/upload', upload.single('file'), async (req, res) => {
+  try {
     const { intern_id, report_title, report_description, due_date } = req.body;
-    if (!intern_id || !report_title) return res.status(400).json({ error: 'intern_id and report_title are required' });
-    if (!req.file) return res.status(400).json({ error: 'Report file is required' });
+    if (!intern_id || !report_title)
+      return res.status(400).json({ error: 'intern_id and report_title are required' });
 
-    const filePath = 'uploads/' + req.file.filename;
+    if (!req.file)
+      return res.status(400).json({ error: 'Report file is required' });
+
+    // Upload file buffer directly to Cloudinary in 'reports/{intern_id}' folder
+    const originalName = req.file.originalname.split('.').slice(0, -1).join('.');
+    const result = await new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: `Intern/${intern_id}/reports`,
+          public_id: originalName,
+          resource_type: 'raw' // raw used for documents like pdf, docx etc.
+        },
+        (error, result) => (error ? reject(error) : resolve(result))
+      );
+      streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
+    });
+
+    const fileUrl = result.secure_url; // Cloudinary file URL to save in DB
+
     const sql = `
       INSERT INTO Reports (intern_id, report_title, report_description, file_path, status, due_date, submitted_at)
       VALUES (?, ?, ?, ?, 'Pending', ?, NOW())
     `;
-    db.query(sql, [intern_id, report_title, report_description || null, filePath, due_date || null], (err) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Failed to upload report' });
-      }
-      res.json({ message: 'Report uploaded successfully' });
-    });
-  });
+
+    await db.query(sql, [intern_id, report_title, report_description || null, fileUrl, due_date || null]);
+
+    res.json({ message: 'Report uploaded successfully', fileUrl });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to upload report' });
+  }
+});
   
   // GET /api/reports/download/:id
   // Download a report file by report ID
@@ -1944,39 +1964,59 @@ app.post('/api/leave-requests', async (req, res) => {
     });
   });
   
-  // ------------------- UPLOAD document (file or link) -------------------
-  app.post('/api/documents/upload', upload.single("file"), (req, res) => {
-    console.log("BODY:", req.body);
-    console.log("FILE:", req.file);
+// ------------------- UPLOAD document (file or link) -------------------
+app.post('/api/documents/upload', upload.single("file"), async (req, res) => {
+    try {
+      console.log("BODY:", req.body);
+      console.log("FILE:", req.file);
   
-    const { intern_id, customFileName, fileLink } = req.body;
-    if (!intern_id) return res.status(400).json({ error: "intern_id is required" });
+      const { intern_id, customFileName, fileLink } = req.body;
+      if (!intern_id) return res.status(400).json({ error: "intern_id is required" });
   
-    let filename = null;
-    let filePath = null;
+      let filename = null;
+      let filePath = null;
   
-    if (req.file) {
-      filename = customFileName?.trim() || req.file.originalname;
-      filePath = req.file.path;
-    } else if (fileLink && fileLink.trim() !== "") {
-      filePath = fileLink.trim();
-      filename = customFileName?.trim() || "Link";
-    } else {
-      return res.status(400).json({ error: "No file or link provided" });
-    }
+      if (req.file) {
+        // Use custom filename or original name
+        filename = customFileName?.trim() || req.file.originalname;
   
-    const sql = `INSERT INTO Documents 
-                 (intern_id, doc_title, upload_date, status, file_path, uploaded_by) 
-                 VALUES (?, ?, NOW(), 'Pending', ?, 'Intern')`;
+        // Upload file buffer to Cloudinary under documents/{intern_id}
+        const result = await new Promise((resolve, reject) => {
+          const uploadStream = cloudinary.uploader.upload_stream(
+            {
+              folder: `Interns/${intern_id}/documents`,
+              public_id: filename.split('.').slice(0, -1).join('.'),
+              resource_type: 'raw'
+            },
+            (error, result) => (error ? reject(error) : resolve(result))
+          );
+          streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
+        });
   
-    db.query(sql, [intern_id, filename, filePath], (err, result) => {
-      if (err) {
-        console.error("Failed to save document:", err);
-        return res.status(500).json({ error: "Failed to upload document" });
+        filePath = result.secure_url; // URL from Cloudinary
+      } else if (fileLink && fileLink.trim() !== "") {
+        filePath = fileLink.trim();
+        filename = customFileName?.trim() || "Link";
+      } else {
+        return res.status(400).json({ error: "No file or link provided" });
       }
-      res.json({ message: "✅ Document uploaded successfully" });
-    });
-  });
+  
+      const sql = `INSERT INTO documents 
+                   (intern_id, doc_title, upload_date, status, file_path, uploaded_by) 
+                   VALUES (?, ?, NOW(), 'Pending', ?, 'Intern')`;
+  
+      db.query(sql, [intern_id, filename, filePath], (err, result) => {
+        if (err) {
+          console.error("Failed to save document:", err);
+          return res.status(500).json({ error: "Failed to upload document" });
+        }
+        res.json({ message: "✅ Document uploaded successfully", filePath });
+      });
+    } catch (err) {
+      console.error("Server error uploading document:", err);
+      return res.status(500).json({ error: "Server error" });
+    }
+});
   
   
   // ------------------- DOWNLOAD document by ID -------------------
