@@ -2016,7 +2016,7 @@ app.post('/api/documents/upload', upload.single("file"), async (req, res) => {
         return res.status(400).json({ error: "No file or link provided" });
       }
   
-      const sql = `INSERT INTO documents 
+      const sql = `INSERT INTO Documents 
                    (intern_id, doc_title, upload_date, status, file_path, uploaded_by) 
                    VALUES (?, ?, NOW(), 'Pending', ?, 'Intern')`;
   
