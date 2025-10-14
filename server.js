@@ -1328,7 +1328,7 @@ app.post('/api/reports/upload', upload.single('file'), async (req, res) => {
           {
             folder: `Intern/${intern_id}/reports`,
             public_id: originalName,
-            resource_type: 'raw'
+            resource_type: 'image'
           },
           (error, result) => {
             if (error) {
