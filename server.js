@@ -1384,7 +1384,7 @@ app.get('/api/dashboard-stats', (req, res) => {
 
 //submit report
 app.post('/api/submitreport' (req, res) => {
-    const { intern_id, report_description,report_title } = req.body;
+    const { intern_id, report_description,report_title,file_path } = req.body;
 
     if (!req.file) {
         return res.status(400).json({ message: 'No file uploaded' });
