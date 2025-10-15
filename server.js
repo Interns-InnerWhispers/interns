@@ -1298,11 +1298,12 @@ app.post('/api/reports/upload', async (req, res) => {
   try {
     const { intern_id, report_title, report_description, due_date, file_path } = req.body;
 
+    // Validate required fields
     if (!intern_id || !report_title)
       return res.status(400).json({ error: 'intern_id and report_title are required' });
 
-    if (!file_url)
-      return res.status(400).json({ error: 'file_url is required' });
+    if (!file_path)
+      return res.status(400).json({ error: 'file_path is required' });
 
     const sql = `
       INSERT INTO Reports (intern_id, report_title, report_description, file_path, status, due_date, submitted_at)
@@ -1317,13 +1318,16 @@ app.post('/api/reports/upload', async (req, res) => {
       due_date || null,
     ]);
 
-    res.json({ message: 'Report uploaded successfully', fileUrl: file_url });
+    res.json({
+      message: 'Report uploaded successfully',
+      fileUrl: file_path, // ✅ send correct key
+    });
   } catch (err) {
-    console.error(err);
+    console.error('Upload error:', err);
     res.status(500).json({ error: 'Failed to upload report' });
   }
 });
-  
+
   // GET /api/reports/download/:id
   // Download a report file by report ID
 app.get('/api/reports/download/:id', (req, res) => {
