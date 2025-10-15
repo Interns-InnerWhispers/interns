@@ -1390,7 +1390,7 @@ app.post('/api/submitreport', (req, res) => {
         return res.status(400).json({ message: 'No file uploaded' });
     }
 
-    const filePath = req.file.path;
+    //const filePath = req.file.path;
 
     const query = `
         INSERT INTO Reports (intern_id, report_title,report_description, file_path)
