@@ -1383,7 +1383,7 @@ app.get('/api/dashboard-stats', (req, res) => {
 });
 
 //submit report
-app.post('/api/submitreport' (req, res) => {
+app.post('/api/submitreport', (req, res) => {
     const { intern_id, report_description,report_title,file_path,fileName } = req.body;
 
     if (!req.file) {
