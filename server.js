@@ -1404,6 +1404,7 @@ app.post('/api/submitreport', (req, res) => {
   });
 });
 
+
 // Add this helper function at the top of the file
 function convertTo24Hour(timeStr) {
     if (!timeStr || typeof timeStr !== 'string') {
