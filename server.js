@@ -1382,29 +1382,26 @@ app.get('/api/dashboard-stats', (req, res) => {
     });
 });
 
-//submit report
 app.post('/api/submitreport', (req, res) => {
-    const { intern_id,report_title, report_description,file_path,fileName } = req.body;
+  const { intern_id, report_title, report_description, file_path } = req.body;
 
-    if (!req.file) {
-        return res.status(400).json({ message: 'No file uploaded' });
+  if (!intern_id || !report_title || !file_path) {
+    return res.status(400).json({ message: 'Missing required fields' });
+  }
+
+  const query = `
+    INSERT INTO Reports (intern_id, report_title, report_description, file_path)
+    VALUES (?, ?, ?, ?)
+  `;
+
+  db.query(query, [intern_id, report_title, report_description, file_path], (err, result) => {
+    if (err) {
+      console.error("DB Insert Error:", err);
+      return res.status(500).json({ message: 'Database error', error: err });
     }
 
-    //const filePath = req.file.path;
-
-    const query = `
-        INSERT INTO Reports (intern_id, report_title,report_description, file_path)
-        VALUES (?, ?, ?,?)
-    `;
-
-    db.query(query, [intern_id, report_title,report_description, filePath], (err, result) => {
-        if (err) {
-            console.error("DB Insert Error:", err);
-            return res.status(500).json({ message: 'Database error', error: err });
-        }
-
-        return res.json({ message: 'Report submitted successfully', reportId: result.insertId });
-    });
+    res.json({ message: 'Report submitted successfully', reportId: result.insertId });
+  });
 });
 
 // Add this helper function at the top of the file
