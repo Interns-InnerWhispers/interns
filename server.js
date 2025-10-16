@@ -1297,7 +1297,7 @@ app.get('/api/reports', (req, res) => {
 app.post('/api/reports/upload', async (req, res) => {
   try {
     const { intern_id, report_title, report_description, due_date, file_path } = req.body;
-
+    console.log(req.body);
     // Validate required fields
     if (!intern_id || !report_title)
       return res.status(400).json({ error: 'intern_id required' });
