@@ -1300,7 +1300,16 @@ app.post('/api/reports/upload', async (req, res) => {
 
     // Validate required fields
     if (!intern_id || !report_title)
-      return res.status(400).json({ error: 'intern_id and report_title are required' });
+      return res.status(400).json({ error: 'intern_id required' });
+    if (!report_title)
+      return res.status(400).json({ error: 'report_title is required' });
+    if (!report_description)
+      return res.status(400).json({ error: 'report_description is required' });
+    if (!due_date)
+      return res.status(400).json({ error: 'due_date is required' });
+    if (!file_path)
+      return res.status(400).json({ error: 'file_path is required' });
+    
 
     if (!file_path)
       return res.status(400).json({ error: 'file_path is required' });
