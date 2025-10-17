@@ -858,24 +858,33 @@ app.post("/api/register", upload.single("profileImage"), async (req, res) => {
 
 //interndashboard
 app.get('/api/getintern/:id', async (req, res) => {
+  const internId = req.params.id;
+
   try {
-    const internId = req.params.id;
+    const results = await new Promise((resolve, reject) => {
+      db.query(
+        `SELECT email, internrole, phone
+         FROM Interns
+         WHERE intern_id = ?`,
+        [internId],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
+        }
+      );
+    });
 
-    const [rows] = await db.query(
-      'SELECT email, internrole, phone FROM interns WHERE intern_id = ?',
-      [internId]
-    );
-
-    if (rows.length === 0) {
+    if (results.length === 0) {
       return res.status(404).json({ message: 'Intern not found' });
     }
 
-    res.json(rows[0]);
+    res.json(results[0]);
   } catch (error) {
     console.error('Error fetching intern:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
+
 
 app.get('/api/insterdashboard-stats', async (req, res) => {
     try {
