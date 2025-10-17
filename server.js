@@ -862,7 +862,7 @@ app.get('/api/getintern/:id', async (req, res) => {
     const internId = req.params.id;
 
     const [rows] = await pool.query(
-      'SELECT email, department, phone_number FROM interns WHERE intern_id = ?',
+      'SELECT email, internrole, phone FROM interns WHERE intern_id = ?',
       [internId]
     );
 
