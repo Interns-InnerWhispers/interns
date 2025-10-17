@@ -885,6 +885,34 @@ app.get('/api/getintern/:id', async (req, res) => {
   }
 });
 
+app.put('/api/updateintern/:id', async (req, res) => {
+  const internId = req.params.id;
+  const { name, email, phone, internrole } = req.body;
+
+  try {
+    const results = await new Promise((resolve, reject) => {
+      db.query(
+        `UPDATE interns
+         SET name = ?, email = ?, phone_number = ?, department = ?
+         WHERE intern_id = ?`,
+        [name, email, phone, internrole, internId],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
+        }
+      );
+    });
+
+    if (results.affectedRows === 0) {
+      return res.status(404).json({ message: 'Intern not found' });
+    }
+
+    res.status(200).json({ message: 'Intern updated successfully' });
+  } catch (error) {
+    console.error('Error updating intern:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
 
 app.get('/api/insterdashboard-stats', async (req, res) => {
     try {
