@@ -857,6 +857,24 @@ app.post("/api/register", upload.single("profileImage"), async (req, res) => {
 });
 
 //interndashboard
+app.get('api/getintern/:id', (req, res) => {
+  const internId = req.params.id;
+
+  const sql = `SELECT email, internrole, phone FROM Interns WHERE intern_id = ?`;
+
+  con.query(sql, [internId], (err, results) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({ message: 'Intern not found' });
+    }
+
+    res.status(200).json(results[0]);
+  });
+});
 
 app.get('/api/insterdashboard-stats', async (req, res) => {
     try {
