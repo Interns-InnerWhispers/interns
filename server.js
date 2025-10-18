@@ -989,32 +989,19 @@ app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (re
 
     const internEmail = internData.email;
 
-    // 🔹 Step 2: Check if an existing image is in Cloudinary
-    const existingImage = await cloudinary.api.resources({
-      type: "upload",
-      prefix: `Interns/${internId}/profile_pic`,
-      max_results: 1
-    });
-    console.log("Existing Image:\n",existingImage);
-    if (existingImage.resources.length > 0) {
-      const publicId = existingImage.resources[0].public_id;
-      console.log(`🗑️ Deleting old image: ${publicId}`);
-      await cloudinary.uploader.destroy(publicId);
-    }
-
     // 🔹 Step 3: Upload new image (same path → ensures replacement)
     const uploadResult = await new Promise((resolve, reject) => {
-      const uploadStream = cloudinary.uploader.upload_stream(
-        {
-          folder: `Interns/${internId}`,
-          public_id: "profile_pic",
-          resource_type: "image",
-          overwrite: true,
-        },
-        (error, result) => (error ? reject(error) : resolve(result))
-      );
-      streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
-    });
+            const uploadStream = cloudinary.uploader.upload_stream(
+                {
+                    folder: `Interns/${internId}`,
+                    public_id: 'profile_pic',
+                    resource_type: 'image',
+                    overwrite: true
+                },
+                (error, result) => (error ? reject(error) : resolve(result))
+            );
+            streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
+        });
 
     const imageUrl = uploadResult.secure_url;
     console.log("✅ Uploaded New Image:", imageUrl);
