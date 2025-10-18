@@ -922,7 +922,7 @@ app.put('/api/interns/updateintern/:id', async (req, res) => {
       db.query(
         `UPDATE users
          SET full_name = ?, phone = ?, email = ?
-         WHERE email = ?`,
+         WHERE LOWER(email) = LOWER(?)`,
         [name, phone, email, currentEmail],
         (err, rows) => {
           if (err) reject(err);
@@ -930,6 +930,7 @@ app.put('/api/interns/updateintern/:id', async (req, res) => {
         }
       );
     });
+    console.log(users);
 
     if (users.affectedRows === 0) {
       console.log("User not found for this intern");
