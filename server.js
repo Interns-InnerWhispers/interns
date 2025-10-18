@@ -895,18 +895,35 @@ app.get('/api/getintern/:id', async (req, res) => {
 });
 
 app.put('/api/interns/updateintern/:id', async (req, res) => {
-  const internId = req.params.id; // still needed to identify the intern uniquely
+  const internId = req.params.id;
   const { name, email, phone, internrole } = req.body;
 
   try {
-    // Update users table based on name
+    // Get current email from Interns table
+    const iemail = await new Promise((resolve, reject) => {
+      db.query(
+        `SELECT email FROM Interns WHERE intern_id = ?`,
+        [internId],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
+        }
+      );
+    });
+
+    if (iemail.length === 0) {
+      return res.status(404).json({ message: "Intern not found" });
+    }
+
+    const currentEmail = iemail[0].email;
+
+    // Update users table
     const users = await new Promise((resolve, reject) => {
       db.query(
         `UPDATE users
-         JOIN Interns ON users.email = Interns.email
-         SET users.full_name = ?, users.phone = ?
-         WHERE Interns.name = ?`,
-        [name, phone, name],
+         SET full_name = ?, phone = ?, email = ?
+         WHERE email = ?`,
+        [name, phone, email, currentEmail],
         (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
@@ -915,11 +932,11 @@ app.put('/api/interns/updateintern/:id', async (req, res) => {
     });
 
     if (users.affectedRows === 0) {
-      console.log("User not found with this name");
-      return res.status(404).json({message:"user not found"})
+      console.log("User not found for this intern");
+      // optional: you can insert a new user here if missing
     }
 
-    // Update Interns table by intern_id
+    // Update Interns table
     const results = await new Promise((resolve, reject) => {
       db.query(
         `UPDATE Interns
@@ -934,13 +951,13 @@ app.put('/api/interns/updateintern/:id', async (req, res) => {
     });
 
     if (results.affectedRows === 0) {
-      return res.status(404).json({ message: 'Intern not found' });
+      return res.status(404).json({ message: "Intern not found" });
     }
 
-    res.status(200).json({ message: 'Intern updated successfully' });
+    res.status(200).json({ message: "Intern updated successfully" });
   } catch (error) {
-    console.error('Error updating intern:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    console.error("Error updating intern:", error);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
