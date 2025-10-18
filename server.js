@@ -895,18 +895,18 @@ app.get('/api/getintern/:id', async (req, res) => {
 });
 
 app.put('/api/interns/updateintern/:id', async (req, res) => {
-  const internId = req.params.id;
+  const internId = req.params.id; // still needed to identify the intern uniquely
   const { name, email, phone, internrole } = req.body;
 
   try {
-    // --- Update users table ---
+    // Update users table based on name
     const users = await new Promise((resolve, reject) => {
       db.query(
         `UPDATE users
-         JOIN Interns ON users.email = Interns.email
+         JOIN Interns ON users.full_name = Interns.name
          SET users.full_name = ?, users.phone = ?
-         WHERE Interns.internrole = ? AND Interns.intern_id = ?`,
-        [name, phone, internrole, internId],
+         WHERE Interns.name = ?`,
+        [name, phone, name],
         (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
@@ -915,16 +915,16 @@ app.put('/api/interns/updateintern/:id', async (req, res) => {
     });
 
     if (users.affectedRows === 0) {
-      return res.status(404).json({ message: 'User not found' });
+      console.log("User not found with this name");
     }
 
-    // --- Update Interns table ---
+    // Update Interns table by intern_id
     const results = await new Promise((resolve, reject) => {
       db.query(
         `UPDATE Interns
-         SET name = ?, email = ?, phone = ?
+         SET name = ?, email = ?, phone = ?, internrole = ?
          WHERE intern_id = ?`,
-        [name, email, phone, internId],
+        [name, email, phone, internrole, internId],
         (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
@@ -936,12 +936,13 @@ app.put('/api/interns/updateintern/:id', async (req, res) => {
       return res.status(404).json({ message: 'Intern not found' });
     }
 
-    res.status(200).json({ message: '✅ Intern updated successfully' });
+    res.status(200).json({ message: 'Intern updated successfully' });
   } catch (error) {
-    console.error('❌ Error updating intern:', error);
+    console.error('Error updating intern:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
+
 
 app.get('/api/insterdashboard-stats', async (req, res) => {
     try {
