@@ -894,7 +894,7 @@ app.get('/api/getintern/:id', async (req, res) => {
   }
 });
 
-pp.put('/api/interns/updateintern/:id', async (req, res) => {
+app.put('/api/interns/updateintern/:id', async (req, res) => {
   const internId = req.params.id;
   const { name, email, phone, internrole } = req.body;
 
