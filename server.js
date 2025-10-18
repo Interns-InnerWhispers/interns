@@ -916,7 +916,7 @@ app.put('/api/interns/updateintern/:id', async (req, res) => {
     }
 
     const currentEmail = iemail[0].email;
-
+    console.log(iemail);
     // Update users table
     const users = await new Promise((resolve, reject) => {
       db.query(
