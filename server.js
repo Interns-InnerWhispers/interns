@@ -995,7 +995,7 @@ app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (re
       prefix: `Interns/${internId}/profile_pic`,
       max_results: 1
     });
-
+    console.log("Existing Image:\n",existingImage);
     if (existingImage.resources.length > 0) {
       const publicId = existingImage.resources[0].public_id;
       console.log(`🗑️ Deleting old image: ${publicId}`);
@@ -1022,7 +1022,7 @@ app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (re
     // 🔹 Step 4: Update only `users.profile_image`
     const result = await new Promise((resolve, reject) => {
       db.query(
-        `UPDATE users SET profile_image = ? WHERE email = ?`,
+        `UPDATE users SET profile_image = ? WHERE LOWER(email) = LOWER(?)`,
         [imageUrl, internEmail],
         (err, rows) => {
           if (err) reject(err);
