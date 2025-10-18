@@ -894,28 +894,31 @@ app.get('/api/getintern/:id', async (req, res) => {
   }
 });
 
-app.put('/api/Interns/updateintern/:id', async (req, res) => {
+pp.put('/api/interns/updateintern/:id', async (req, res) => {
   const internId = req.params.id;
-  const { name, email, phone,internrole} = req.body;
+  const { name, email, phone, internrole } = req.body;
 
   try {
-
+    // --- Update users table ---
     const users = await new Promise((resolve, reject) => {
-  db.query(
-    `UPDATE users
-     JOIN Interns ON users.email = Interns.email
-     SET users.full_name = ?, users.phone = ?
-     WHERE Interns.internrole = ?`,
-    [name, phone, internrole],
-    (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
+      db.query(
+        `UPDATE users
+         JOIN Interns ON users.email = Interns.email
+         SET users.full_name = ?, users.phone = ?
+         WHERE Interns.internrole = ? AND Interns.intern_id = ?`,
+        [name, phone, internrole, internId],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
+        }
+      );
+    });
+
+    if (users.affectedRows === 0) {
+      return res.status(404).json({ message: 'User not found' });
     }
-  );
-});
-if (users.affectedRows === 0) {
-      return res.status(404).json({ message: 'users not found' });
-    }
+
+    // --- Update Interns table ---
     const results = await new Promise((resolve, reject) => {
       db.query(
         `UPDATE Interns
@@ -929,14 +932,13 @@ if (users.affectedRows === 0) {
       );
     });
 
-
     if (results.affectedRows === 0) {
       return res.status(404).json({ message: 'Intern not found' });
     }
 
-    res.status(200).json({ message: 'Intern updated successfully' });
+    res.status(200).json({ message: '✅ Intern updated successfully' });
   } catch (error) {
-    console.error('Error updating intern:', error);
+    console.error('❌ Error updating intern:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
