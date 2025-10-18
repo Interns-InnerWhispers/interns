@@ -994,10 +994,10 @@ app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (re
     const uploadResult = await new Promise((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         {
-          folder: `Interns/${internId}`, // same folder
-          public_id: "profile_pic",      // same public_id ensures replacement
+          folder: `Interns/${internId}`,
+          public_id: "profile_pic",
           resource_type: "image",
-          overwrite: true,               // ✅ ensures replacement
+          overwrite: true,
         },
         (error, result) => (error ? reject(error) : resolve(result))
       );
@@ -1007,7 +1007,7 @@ app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (re
     const imageUrl = uploadResult.secure_url;
     console.log("✅ Profile image replaced:", imageUrl);
 
-    // Step 3: Update only `users.profile_image`
+    // Step 3: Update only users.profile_image
     const updateResult = await new Promise((resolve, reject) => {
       db.query(
         "UPDATE users SET profile_image = ? WHERE email = ?",
@@ -1023,7 +1023,6 @@ app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (re
       return res.status(404).json({ message: "User not found for this intern" });
     }
 
-    // Step 4: Respond success
     res.status(200).json({
       message: "✅ Profile image updated successfully!",
       imageUrl,
@@ -1033,6 +1032,7 @@ app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (re
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
 
 app.get('/api/insterdashboard-stats', async (req, res) => {
     try {
