@@ -903,7 +903,7 @@ app.put('/api/interns/updateintern/:id', async (req, res) => {
     const users = await new Promise((resolve, reject) => {
       db.query(
         `UPDATE users
-         JOIN Interns ON users.full_name = Interns.name
+         JOIN Interns ON users.email = Interns.email
          SET users.full_name = ?, users.phone = ?
          WHERE Interns.name = ?`,
         [name, phone, name],
@@ -916,6 +916,7 @@ app.put('/api/interns/updateintern/:id', async (req, res) => {
 
     if (users.affectedRows === 0) {
       console.log("User not found with this name");
+      return res.status(404).json({message:"user not found"})
     }
 
     // Update Interns table by intern_id
