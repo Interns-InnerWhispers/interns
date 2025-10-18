@@ -991,20 +991,23 @@ app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (re
     console.log("📧 Intern Email:", internEmail);
 
     // Step 2: Upload new image to same Cloudinary path (auto-replace)
-    const uploadResult = await new Promise((resolve, reject) => {
-      const uploadStream = cloudinary.uploader.upload_stream(
-        {
-          folder: `Interns/${internId}`,
-          public_id: "profile_pic",
-          resource_type: "image",
-          overwrite: true,
-        },
-        (error, result) => (error ? reject(error) : resolve(result))
-      );
-      streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
-    });
+    const result = await new Promise((resolve, reject) => {
+            const uploadStream = cloudinary.uploader.upload_stream(
+                {
+                    folder: `Interns/${internId}`,
+                    public_id: 'profile_pic',
+                    resource_type: 'image',
+                    overwrite: true
+                },
+                (error, result) => (error ? reject(error) : resolve(result))
+            );
+            streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
+        });
 
-    const imageUrl = uploadResult.secure_url;
+        const picUrl = result.secure_url;
+        console.log('Cloudinary profile pic URL:', picUrl);
+
+    const imageUrl = picUrl;
     console.log("✅ Profile image replaced:", imageUrl);
 
     // Step 3: Update only users.profile_image
