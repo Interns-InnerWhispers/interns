@@ -126,10 +126,19 @@ let db;
 async function initializeDatabase() {
     try {
         await db.query(`
-            CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                name VARCHAR(255),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+           CREATE TABLE IF NOT EXISTS users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) UNIQUE,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    full_name VARCHAR(255) NOT NULL,
+    phone VARCHAR(20),
+    role VARCHAR(15) NOT NULL DEFAULT 'patient',
+    profile_image VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
+    last_login TIMESTAMP NULL,
+    status ENUM('active', 'inactive', 'suspended') DEFAULT 'active'
             )
         `);
         console.log("✅ Database initialized");
@@ -887,21 +896,39 @@ app.get('/api/getintern/:id', async (req, res) => {
 
 app.put('/api/updateintern/:id', async (req, res) => {
   const internId = req.params.id;
-  const { name, email, phone, internrole } = req.body;
+  const { name, email, phone,internrole} = req.body;
 
   try {
+
+    const users = await new Promise((resolve, reject) => {
+  db.query(
+    `UPDATE users
+     JOIN Interns ON users.email = Interns.email
+     SET users.full_name = ?, users.phone = ?
+     WHERE Interns.internrole = ?`,
+    [name, phone, internrole],
+    (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    }
+  );
+});
+if (users.affectedRows === 0) {
+      return res.status(404).json({ message: 'users not found' });
+    }
     const results = await new Promise((resolve, reject) => {
       db.query(
-        `UPDATE interns
-         SET name = ?, email = ?, phone_number = ?, department = ?
+        `UPDATE Interns
+         SET name = ?, email = ?, phone = ?
          WHERE intern_id = ?`,
-        [name, email, phone, internrole, internId],
+        [name, email, phone, internId],
         (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
         }
       );
     });
+
 
     if (results.affectedRows === 0) {
       return res.status(404).json({ message: 'Intern not found' });
