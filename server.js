@@ -962,6 +962,88 @@ app.put('/api/interns/updateintern/:id', async (req, res) => {
   }
 });
 
+app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (req, res) => {
+  const internId = req.params.id;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "Profile image is required" });
+    }
+
+    // 🔹 Step 1: Get intern's email (to update users table)
+    const internData = await new Promise((resolve, reject) => {
+      db.query(
+        `SELECT email FROM Interns WHERE intern_id = ?`,
+        [internId],
+        (err, rows) => {
+          if (err) reject(err);
+          else if (rows.length === 0) resolve(null);
+          else resolve(rows[0]);
+        }
+      );
+    });
+
+    if (!internData) {
+      return res.status(404).json({ error: "Intern not found" });
+    }
+
+    const internEmail = internData.email;
+
+    // 🔹 Step 2: Check if an existing image is in Cloudinary
+    const existingImage = await cloudinary.api.resources({
+      type: "upload",
+      prefix: `Interns/${internId}/profile_pic`,
+      max_results: 1
+    });
+
+    if (existingImage.resources.length > 0) {
+      const publicId = existingImage.resources[0].public_id;
+      console.log(`🗑️ Deleting old image: ${publicId}`);
+      await cloudinary.uploader.destroy(publicId);
+    }
+
+    // 🔹 Step 3: Upload new image (same path → ensures replacement)
+    const uploadResult = await new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: `Interns/${internId}`,
+          public_id: "profile_pic",
+          resource_type: "image",
+          overwrite: true,
+        },
+        (error, result) => (error ? reject(error) : resolve(result))
+      );
+      streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
+    });
+
+    const imageUrl = uploadResult.secure_url;
+    console.log("✅ Uploaded New Image:", imageUrl);
+
+    // 🔹 Step 4: Update only `users.profile_image`
+    const result = await new Promise((resolve, reject) => {
+      db.query(
+        `UPDATE users SET profile_image = ? WHERE email = ?`,
+        [imageUrl, internEmail],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
+        }
+      );
+    });
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "User not found for this intern" });
+    }
+
+    res.status(200).json({
+      message: "Profile image replaced successfully!",
+      imageUrl,
+    });
+  } catch (error) {
+    console.error("❌ Error updating profile image:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
 
 app.get('/api/insterdashboard-stats', async (req, res) => {
     try {
