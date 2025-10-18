@@ -970,46 +970,65 @@ app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (re
       return res.status(400).json({ error: "Profile image is required" });
     }
 
-    // 🔹 Step 1: Get intern's email (to update users table)
+    // Step 1: Fetch intern email
     const internData = await new Promise((resolve, reject) => {
       db.query(
-        `SELECT email FROM Interns WHERE intern_id = ?`,
+        "SELECT email FROM Interns WHERE intern_id = ?",
         [internId],
         (err, rows) => {
           if (err) reject(err);
-          else if (rows.length === 0) resolve(null);
+          else if (!rows || rows.length === 0) resolve(null);
           else resolve(rows[0]);
         }
       );
     });
 
     if (!internData) {
+      console.log(`❌ No intern found with ID: ${internId}`);
       return res.status(404).json({ error: "Intern not found" });
     }
 
     const internEmail = internData.email;
+    console.log("📧 Intern Email:", internEmail);
 
-    // 🔹 Step 3: Upload new image (same path → ensures replacement)
+    // Step 2: Find old image (if any) and delete it
+    try {
+      const existing = await cloudinary.api.resources({
+        type: "upload",
+        prefix: `Interns/${internId}/profile_pic`,
+        max_results: 1,
+      });
+
+      if (existing.resources.length > 0) {
+        const oldPublicId = existing.resources[0].public_id;
+        console.log("🗑️ Deleting old Cloudinary image:", oldPublicId);
+        await cloudinary.uploader.destroy(oldPublicId);
+      }
+    } catch (cloudErr) {
+      console.warn("⚠️ Could not check or delete old Cloudinary image:", cloudErr.message);
+    }
+
+    // Step 3: Upload new image
     const uploadResult = await new Promise((resolve, reject) => {
-            const uploadStream = cloudinary.uploader.upload_stream(
-                {
-                    folder: `Interns/${internId}`,
-                    public_id: 'profile_pic',
-                    resource_type: 'image',
-                    overwrite: true
-                },
-                (error, result) => (error ? reject(error) : resolve(result))
-            );
-            streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
-        });
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: `Interns/${internId}`,
+          public_id: "profile_pic",
+          resource_type: "image",
+          overwrite: true,
+        },
+        (error, result) => (error ? reject(error) : resolve(result))
+      );
+      streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
+    });
 
     const imageUrl = uploadResult.secure_url;
-    console.log("✅ Uploaded New Image:", imageUrl);
+    console.log("✅ New Image Uploaded:", imageUrl);
 
-    // 🔹 Step 4: Update only `users.profile_image`
-    const result = await new Promise((resolve, reject) => {
+    // Step 4: Update users table
+    const updateResult = await new Promise((resolve, reject) => {
       db.query(
-        `UPDATE users SET profile_image = ? WHERE LOWER(email) = LOWER(?)`,
+        "UPDATE users SET profile_image = ? WHERE email = ?",
         [imageUrl, internEmail],
         (err, rows) => {
           if (err) reject(err);
@@ -1018,12 +1037,13 @@ app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (re
       );
     });
 
-    if (result.affectedRows === 0) {
+    if (updateResult.affectedRows === 0) {
+      console.log(`❌ No user found with email: ${internEmail}`);
       return res.status(404).json({ message: "User not found for this intern" });
     }
 
     res.status(200).json({
-      message: "Profile image replaced successfully!",
+      message: "✅ Profile image replaced successfully!",
       imageUrl,
     });
   } catch (error) {
@@ -1031,6 +1051,7 @@ app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (re
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
 
 app.get('/api/insterdashboard-stats', async (req, res) => {
     try {
