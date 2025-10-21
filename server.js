@@ -1690,24 +1690,23 @@ app.post('/api/appointments', (req, res) => {
         req.body.status || 'pending'
     ];
 
-    const r = db.query(query, values, (err, result) => {
-        if (err) {
-            console.error('Database error:', err);
-            res.status(500).json({
-                error: 'Could not save appointment',
-                details: err.message
-            });
-            return;
-        }
-
-        res.status(201).json({
-            message: 'Appointment created successfully',
-            id: result.insertId,
-            appointment_date: req.body.appointment_date, // Send back the original date
-            appointment_time: time24,
-            r
+    db.query(query, values, (err, result) => {
+    if (err) {
+        console.error('Database error:', err);
+        res.status(500).json({
+            error: 'Could not save appointment',
+            details: err.message
         });
+        return;
+    }
+
+    res.status(201).json({
+        message: 'Appointment created successfully',
+        id: result.insertId,
+        appointment_date: req.body.appointment_date,
+        appointment_time: time24
     });
+});
 });
 
 // Helper to format date in IST (Indian Standard Time)
