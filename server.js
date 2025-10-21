@@ -1628,6 +1628,110 @@ function convertTo24Hour(timeStr) {
     }
 }
 
+// Modify the appointment POST endpoint
+app.post('/api/appointments', (req, res) => {
+    const time24 = convertTo24Hour(req.body.appointment_time);
+    if (!time24) {
+        res.status(400).json({
+            error: 'Invalid time format',
+            details: 'Time should be in format HH:MM AM/PM or HH:MM'
+        });
+        return;
+    }
+
+    // Get session info based on type
+    const sessionInfo = SESSION_TYPES[req.body.session_type] || {
+        duration: 50,
+        price: 1500
+    };
+
+    const query = `
+        INSERT INTO appointments 
+        SET 
+            patient_name = ?,
+            email = ?,
+            phone = ?,
+            addhar = ?,
+            age = ?,
+            parenttype = ?,
+            parentName = ?,
+            guardianPhone = ?,
+            address = ?,
+            pincode = ?,
+            state = ?,
+            concerns = ?,
+            appointment_date = CONVERT_TZ(?, '+00:00', '+05:30'),
+            appointment_time = ?,
+            session_type = ?,
+            session_price = ?,
+            session_duration = ?,
+            status = ?,
+            created_at = CONVERT_TZ(NOW(), '+00:00', '+05:30')
+    `;
+
+    const values = [
+        req.body.patient_name,
+        req.body.email,
+        req.body.phone,
+        req.body.addhar,
+        req.body.age,
+        req.body.parenttype,
+        req.body.parentName,
+        req.body.guardianPhone,
+        req.body.address,
+        req.body.pincode,
+        req.body.state,
+        req.body.concerns,
+        req.body.appointment_date,
+        time24,
+        req.body.session_type,
+        sessionInfo.price,
+        sessionInfo.duration,
+        req.body.status || 'pending'
+    ];
+
+    const r = db.query(query, values, (err, result) => {
+        if (err) {
+            console.error('Database error:', err);
+            res.status(500).json({
+                error: 'Could not save appointment',
+                details: err.message
+            });
+            return;
+        }
+
+        res.status(201).json({
+            message: 'Appointment created successfully',
+            id: result.insertId,
+            appointment_date: req.body.appointment_date, // Send back the original date
+            appointment_time: time24,
+            r
+        });
+    });
+});
+
+// Helper to format date in IST (Indian Standard Time)
+function formatDateIST(dateInput) {
+    // Accepts either Date object or string in YYYY-MM-DD
+    let d;
+    if (dateInput instanceof Date) {
+        d = dateInput;
+    } else {
+        // Parse as local date (not UTC)
+        // This ensures no timezone shift
+        const [year, month, day] = dateInput.split('-');
+        d = new Date(Number(year), Number(month) - 1, Number(day));
+    }
+    // Convert to IST
+    const utc = d.getTime() + (d.getTimezoneOffset() * 60000);
+    const istOffset = 5.5 * 60 * 60000;
+    const istDate = new Date(utc + istOffset);
+    // Format as YYYY-MM-DD
+    return istDate.getFullYear() + '-' +
+        String(istDate.getMonth() + 1).padStart(2, '0') + '-' +
+        String(istDate.getDate()).padStart(2, '0');
+}
+
 // Add this helper function at the top
 function getCurrentISTDate() {
     const now = new Date();
@@ -1635,6 +1739,7 @@ function getCurrentISTDate() {
     const istDate = new Date(now.getTime() + istOffset);
     return istDate.toISOString().split('T')[0];
 }
+
 
 //api to get the id and role
 app.get("/api/profile", authenticateToken, (req, res) => {
