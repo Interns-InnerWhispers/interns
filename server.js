@@ -697,6 +697,51 @@ function authenticateToken(req, res, next) {
     req.user = user;
     next();
 }
+
+app.post("/api/dream-reflection", async (req, res) => {
+  const { text, emotions } = req.body;
+  console.log(req.body)
+
+  if (!text) {
+    return res.status(400).json({ reflection: "Dream text is required." });
+  }
+
+  const payload = {
+  contents: [
+    {
+      role: "user",
+      parts: [{
+        text: `You are a concise dream interpreter. Keep reflections short and meaningful, 3 to 5 lines max. Interpret this dream: ${text}. Emotions involved: ${emotions.join(', ')}.`
+      }]
+    }
+  ]
+};
+
+
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }
+    );
+
+    const data = await response.json();
+    console.log(data)
+    const reflection = data.candidates?.[0]?.content?.parts?.[0]?.text 
+                        || "Every dream has meaning — stay curious about its feeling.";
+    
+    res.json({ reflection });
+
+  } catch (error) {
+    console.error("Error calling Gemini API:", error);
+    res.status(500).json({ reflection: "Failed to get dream reflection." });
+  }
+});
+
 //login
 app.post("/api/login", async (req, res) => {
     try {
