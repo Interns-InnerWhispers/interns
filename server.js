@@ -609,6 +609,123 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
             console.error('Error creating prescriptions table:', err);
         }
     });
+
+  const createTransctionsTable = `
+                CREATE TABLE IF NOT EXISTS transactions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    type ENUM('income', 'expense') NOT NULL,
+    description VARCHAR(255) NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    approval_status ENUM('Pending','Approved','Rejected') DEFAULT 'Pending',
+    category VARCHAR(100) DEFAULT 'Misc',
+    date DATE DEFAULT CURRENT_DATE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            `;
+    db.query(createTransctionsTable, (err) => {
+        if (err) return console.error('Error creating transactions table:', err);
+        console.log('✅ Transactions table ready');
+    });
+    const createBudgetTable = `
+                CREATE TABLE IF NOT EXISTS budgets (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    total_amount DECIMAL(10,2) NOT NULL,
+    duration DATE NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            `;
+    db.query(createBudgetTable, (err) => {
+        if (err) return console.error('Error creating budgets table:', err);
+        console.log('✅ Budgets table ready');
+    });
+    const createBudgetCategoriesTable = `
+                CREATE TABLE IF NOT EXISTS budget_categories (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    budget_id INT NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    CONSTRAINT fk_budget_category FOREIGN KEY (budget_id)
+        REFERENCES budgets(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            `;
+    db.query(createBudgetCategoriesTable, (err) => {
+        if (err) return console.error('Error creating budgets table:', err);
+        console.log('✅ Budget categories table ready');
+    });
+    const createPaymentsTable = `
+                CREATE TABLE IF NOT EXISTS payments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    payment_id VARCHAR(50) NOT NULL UNIQUE,
+    client_name VARCHAR(150) NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    status ENUM('Succeeded', 'Pending', 'Failed') DEFAULT 'Pending',
+    received_date DATE DEFAULT CURRENT_DATE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            `;
+    db.query(createPaymentsTable, (err) => {
+        if (err) return console.error('Error creating payments table:', err);
+        console.log('✅ Payments table ready');
+    });
+    const createInvoicesTable = `
+                CREATE TABLE IF NOT EXISTS invoices (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    invoice_number VARCHAR(50) NOT NULL UNIQUE,
+    client_name VARCHAR(150) NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    status ENUM('Paid', 'Pending', 'Overdue') DEFAULT 'Pending',
+    issue_date DATE DEFAULT CURRENT_DATE,
+    due_date DATE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            `;
+    db.query(createInvoicesTable, (err) => {
+        if (err) return console.error('Error creating invoices table:', err);
+        console.log('✅ Invoices table ready');
+    });
+
+    const createSettingsTable = `
+                CREATE TABLE if not exists settings (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  company_name VARCHAR(255),
+  support_email VARCHAR(255),
+  timezone VARCHAR(100),
+  currency VARCHAR(10),
+  pay_terms VARCHAR(50),
+  tax_rate DECIMAL(5,2),
+  invoice_prefix VARCHAR(50),
+  auto_send BOOLEAN DEFAULT FALSE,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            `;
+    db.query(createSettingsTable, (err) => {
+        if (err) return console.error('Error creating settings table:', err);
+        console.log('✅ Settings table ready');
+    });
+
+
+    const createReceiptsTable = `
+                CREATE TABLE IF NOT EXISTS receipts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  receipt_number VARCHAR(20) NOT NULL,
+  client_name VARCHAR(100) NOT NULL,
+  invoice_number VARCHAR(20) NOT NULL,
+  amount DECIMAL(10,2) NOT NULL,
+  issue_date DATE NOT NULL,
+  avatar_url VARCHAR(255) DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            `;
+    db.query(createReceiptsTable, (err) => {
+        if (err) return console.error('Error creating receipts table:', err);
+        console.log('✅ Receipts table ready');
+    });
 }
 
 // Update migration function for the new schema
@@ -2654,5 +2771,481 @@ app.get('/api/prescriptions/search', (req, res) => {
             return;
         }
         res.json(results);
+    });
+});
+
+// --- Transactions ---
+app.get('/api/transactions', (req, res) => {
+  const { type, search } = req.query;
+
+  let sql = 'SELECT * FROM transactions WHERE 1=1';
+  const params = [];
+
+  if (type && ['income', 'expense'].includes(type)) {
+    sql += ' AND type = ?';
+    params.push(type);
+  }
+
+  if (search) {
+    sql += ' AND description LIKE ?';
+    params.push(`%${search}%`);
+  }
+
+  sql += ' ORDER BY id DESC';
+
+  db.query(sql, params, (err, rows) => {
+    if (err) {
+      console.error('Failed to fetch transactions:', err);
+      return res.status(500).json({ error: 'Failed to fetch transactions' });
+    }
+    res.json(rows);
+  });
+});
+
+app.get('/api/filtertransactions', (req, res) => {
+  const { fromDate, toDate, category } = req.query;
+
+  let query = `SELECT * FROM transactions WHERE type='expense'`;
+  const params = [];
+
+  if (fromDate) {
+    query += ` AND date >= ?`;
+    params.push(fromDate);
+  }
+
+  if (toDate) {
+    query += ` AND date <= ?`;
+    params.push(toDate);
+  }
+
+  if (category && category !== 'All') {
+    query += ` AND category = ?`;
+    params.push(category);
+  }
+
+  query += ` ORDER BY date DESC`;
+
+  db.query(query, params, (err, rows) => {
+    if (err) {
+      console.error('Error fetching filtered transactions:', err);
+      return res.status(500).json({ error: 'Database error while filtering transactions' });
+    }
+    console.log(rows)
+    res.json(rows);
+  });
+});
+
+
+app.get('/api/summary', (req, res) => {
+    const incomeQuery = 'SELECT SUM(amount) AS totalIncome FROM transactions WHERE type="income"';
+    const expenseQuery = 'SELECT SUM(amount) AS totalExpenses FROM transactions WHERE type="expense"';
+
+    db.query(incomeQuery, (incomeErr, incomeRows) => {
+        if (incomeErr) {
+            console.error('Failed to fetch income summary:', incomeErr);
+            return res.status(500).json({ error: 'Failed to fetch income summary' });
+        }
+
+        db.query(expenseQuery, (expenseErr, expenseRows) => {
+            if (expenseErr) {
+                console.error('Failed to fetch expense summary:', expenseErr);
+                return res.status(500).json({ error: 'Failed to fetch expense summary' });
+            }
+
+            const totalIncome = incomeRows[0].totalIncome || 0;
+            const totalExpenses = expenseRows[0].totalExpenses || 0;
+            const netProfit = totalIncome - totalExpenses;
+            const budgetUtilization = Math.min(Math.round((totalExpenses / 100000) * 100), 100);
+
+            res.json({
+                totalIncome,
+                totalExpenses,
+                netProfit,
+                budgetUtilization
+            });
+        });
+    });
+});
+
+app.get('/api/expenseSummary', (req, res) => {
+  const { category } = req.query; // e.g., ?category=HR
+  const categoryFilter = category && category !== 'All' ? `AND category='${category}'` : '';
+
+  const expenseSummaryQuery = `
+    SELECT 
+      SUM(approval_status='Approved') AS approved,
+      SUM(CASE WHEN approval_status='Pending' THEN amount ELSE 0 END) AS pending,
+      SUM(CASE WHEN approval_status='Rejected' THEN amount ELSE 0 END) AS rejected,
+      SUM(amount) AS totalExpenses
+    FROM transactions
+    WHERE type='expense' ${categoryFilter}
+  `;
+
+  const monthlyQuery = `
+    SELECT DATE_FORMAT(date, '%b') AS month, SUM(amount) AS total
+    FROM transactions
+    WHERE type='expense' ${categoryFilter}
+    GROUP BY MONTH(date)
+    ORDER BY MONTH(date)
+  `;
+
+  const categoryQuery = `
+    SELECT category, SUM(amount) AS total
+    FROM transactions
+    WHERE type='expense'
+    GROUP BY category
+  `;
+
+  db.query(expenseSummaryQuery, (err, expenseRows) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Error fetching expense summary' });
+    }
+
+    const expenseData = expenseRows[0];
+    console.log(expenseData)
+    db.query(monthlyQuery, (err2, monthlyRows) => {
+      if (err2) {
+        console.error(err2);
+        return res.status(500).json({ error: 'Error fetching monthly expenses' });
+      }
+
+      db.query(categoryQuery, (err3, categoryRows) => {
+        if (err3) {
+          console.error(err3);
+          return res.status(500).json({ error: 'Error fetching category breakdown' });
+        }
+
+        const months = monthlyRows.map(r => r.month);
+        const monthlyExpenses = monthlyRows.map(r => r.total);
+        const categoryBreakdown = {};
+        categoryRows.forEach(r => (categoryBreakdown[r.category] = r.total));
+
+        res.json({
+          totalExpenses: expenseData.totalExpenses || 0,
+          approved: expenseData.approved || 0,
+          pending: expenseData.pending || 0,
+          rejected: expenseData.rejected || 0,
+          months,
+          monthlyExpenses,
+          categoryBreakdown
+        });
+      });
+    });
+  });
+});
+
+
+
+
+app.post('/api/budgets', (req, res) => {
+    console.log("body", req.body);
+    const { name, allocated, duration, categories } = req.body;
+    const sql = 'INSERT INTO budgets (name, total_amount, duration) VALUES (?, ?, ?)';
+    db.query(sql, [name, allocated, duration], (err, result) => {
+        if (err) {
+            console.error('Failed to create budget:', err);
+            return res.status(500).json({ error: 'Failed to create budget' });
+        }
+        const budgetId = result.insertId;
+        const catSql = 'INSERT INTO budget_categories (budget_id, name, amount) VALUES ?';
+        const catValues = categories.map(cat => [budgetId, cat.name, cat.amount]);
+        db.query(catSql, [catValues], (catErr, catResult) => {
+            if (catErr) {
+                console.error('Failed to create budget categories:', catErr);
+                return res.status(500).json({ error: 'Failed to create budget categories' });
+            }
+            res.json({ id: budgetId });
+        });
+    });
+});
+
+// --- Budgets ---
+app.get('/api/budgets', (req, res) => {
+    const sql = 'SELECT * FROM budgets ORDER BY id DESC';
+
+    db.query(sql, (err, budgets) => {
+        if (err) {
+            console.error('Failed to fetch budgets:', err);
+            return res.status(500).json({ error: 'Failed to fetch budgets' });
+        }
+
+        if (budgets.length === 0) {
+            return res.json([]);
+        }
+
+        let pending = budgets.length;
+
+        budgets.forEach((budget, index) => {
+            const catSql = 'SELECT name, amount FROM budget_categories WHERE budget_id = ?';
+
+            db.query(catSql, [budget.id], (catErr, categories) => {
+                if (catErr) {
+                    console.error('Failed to fetch budget categories:', catErr);
+                    budgets[index].categories = [];
+                } else {
+                    budgets[index].categories = categories;
+                }
+
+                pending--;
+                if (pending === 0) {
+                    // All queries done, send response
+                    res.json(budgets);
+                }
+            });
+        });
+    });
+});
+
+
+// --- Payments ---
+app.get('/api/payments', (req, res) => {
+    const { search = '', status } = req.query;
+
+    let sql = 'SELECT * FROM payments WHERE 1=1';
+    const params = [];
+
+    if (status && ['Succeeded', 'Pending', 'Failed'].includes(status)) {
+        sql += ' AND status = ?';
+        params.push(status);
+    }
+
+    if (search) {
+        sql += ' AND (payment_id LIKE ? OR client_name LIKE ?)';
+        params.push(`%${search}%`, `%${search}%`);
+    }
+
+    sql += ' ORDER BY received_date DESC, id DESC';
+
+    db.query(sql, params, (err, rows) => {
+        if (err) {
+            console.error('Failed to fetch payments:', err);
+            return res.status(500).json({ error: 'Failed to fetch payments' });
+        }
+        res.json(rows);
+    });
+});
+
+
+// --- Invoices ---
+app.get('/api/invoices', (req, res) => {
+    const { search = '', status } = req.query;
+
+    let sql = 'SELECT * FROM invoices WHERE 1=1';
+    const params = [];
+
+    if (status && ['Paid', 'Pending', 'Overdue'].includes(status)) {
+        sql += ' AND status = ?';
+        params.push(status);
+    }
+
+    if (search) {
+        sql += ' AND (invoice_number LIKE ? OR client_name LIKE ?)';
+        params.push(`%${search}%`, `%${search}%`);
+    }
+
+    sql += ' ORDER BY due_date DESC, id DESC';
+
+    db.query(sql, params, (err, rows) => {
+        if (err) {
+            console.error('Failed to fetch invoices:', err);
+            return res.status(500).json({ error: 'Failed to fetch invoices' });
+        }
+        res.json(rows);
+    });
+});
+
+app.get('/api/receipts', (req, res) => {
+  const { search = '' } = req.query;
+
+  let sql = 'SELECT * FROM receipts WHERE 1=1';
+  const params = [];
+
+  if (search) {
+    sql += ' AND (receipt_number LIKE ? OR client_name LIKE ? OR invoice_number LIKE ?)';
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+  }
+
+  sql += ' ORDER BY issue_date DESC';
+
+  db.query(sql, params, (err, rows) => {
+    if (err) {
+      console.error('Failed to fetch receipts:', err);
+      return res.status(500).json({ error: 'Failed to fetch receipts' });
+    }
+    res.json(rows);
+  });
+});
+
+app.get('/api/irsummary', (req, res) => {
+  const { search = '' } = req.query;
+
+  // Totals query
+  const totalsQuery = `
+    SELECT 
+      (SELECT IFNULL(SUM(amount), 0) FROM invoices) AS totalInvoiced,
+      (SELECT IFNULL(SUM(amount), 0) FROM receipts) AS receiptsIssued,
+      (SELECT IFNULL(SUM(amount), 0) FROM invoices) - (SELECT IFNULL(SUM(amount), 0) FROM receipts) AS outstanding
+  `;
+
+  db.query(totalsQuery, (totalsErr, totalsRows) => {
+    if (totalsErr) {
+      console.error('Failed to fetch totals:', totalsErr);
+      return res.status(500).json({ error: 'Failed to fetch totals' });
+    }
+
+    // Receipts query
+    let receiptsQuery = `
+      SELECT 
+        receipt_number, 
+        client_name, 
+        invoice_number, 
+        amount, 
+        DATE_FORMAT(created_at, "%Y-%m-%d") AS issueDate 
+      FROM receipts 
+      WHERE 1=1
+    `;
+    const receiptsParams = [];
+
+    if (search) {
+      receiptsQuery += ' AND (receipt_number LIKE ? OR client_name LIKE ? OR invoice_number LIKE ?)';
+      receiptsParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    }
+
+    receiptsQuery += ' ORDER BY issueDate DESC LIMIT 100';
+
+    db.query(receiptsQuery, receiptsParams, (receiptsErr, receiptsRows) => {
+      if (receiptsErr) {
+        console.error('Failed to fetch receipts:', receiptsErr);
+        return res.status(500).json({ error: 'Failed to fetch receipts' });
+      }
+
+      // Invoices query
+      let invoicesQuery = `
+        SELECT 
+          invoice_number, 
+          client_name, 
+          amount,
+          DATE_FORMAT(created_at, '%Y-%m-%d') AS issueDate,
+          DATE_FORMAT(due_date, '%Y-%m-%d') AS dueDate
+        FROM invoices
+        WHERE 1=1
+      `;
+      const invoicesParams = [];
+
+      if (search) {
+        invoicesQuery += ' AND (invoice_number LIKE ? OR client_name LIKE ?)';
+        invoicesParams.push(`%${search}%`, `%${search}%`);
+      }
+
+      invoicesQuery += ' ORDER BY issueDate DESC LIMIT 100';
+
+      db.query(invoicesQuery, invoicesParams, (invoicesErr, invoicesRows) => {
+        if (invoicesErr) {
+          console.error('Failed to fetch invoices:', invoicesErr);
+          return res.status(500).json({ error: 'Failed to fetch invoices' });
+        }
+
+        // Send combined response
+        res.json({
+          totals: totalsRows[0],
+          receipts: receiptsRows,
+          invoices: invoicesRows
+        });
+      });
+    });
+  });
+});
+
+app.get('/api/income-trend', (req, res) => {
+  const query = `
+    SELECT DATE_FORMAT(issue_date, '%Y-%m') AS month, SUM(amount) AS amount
+    FROM invoices
+    WHERE issue_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+    GROUP BY month
+    ORDER BY month
+  `;
+  db.query(query, (err, results) => {
+    if (err) return res.status(500).json({ error: 'Failed to fetch income trend' });
+    res.json(results);
+  });
+});
+
+// GET Settings
+app.get('/api/settings', (req, res) => {
+    const sql = 'SELECT * FROM settings LIMIT 1';
+    db.query(sql, (err, rows) => {
+        if (err) {
+            console.error('Failed to fetch settings:', err);
+            return res.status(500).json({ error: 'Failed to fetch settings' });
+        }
+
+        if (rows.length === 0) {
+            return res.json({});
+        }
+
+        res.json(rows[0]);
+    });
+});
+
+// PUT Settings (Update or Insert)
+app.put('/api/settings', (req, res) => {
+    const {
+        company_name,
+        support_email,
+        timezone,
+        currency,
+        pay_terms,
+        tax_rate,
+        invoice_prefix,
+        auto_send,
+    } = req.body;
+
+    // First check if record exists
+    const checkSql = 'SELECT * FROM settings LIMIT 1';
+    db.query(checkSql, (err, rows) => {
+        if (err) {
+            console.error('Error checking settings:', err);
+            return res.status(500).json({ error: 'Failed to update settings' });
+        }
+
+        if (rows.length === 0) {
+            // Insert new record
+            const insertSql = `
+                INSERT INTO settings 
+                (company_name, support_email, timezone, currency, pay_terms, tax_rate, invoice_prefix, auto_send)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `;
+            const params = [company_name, support_email, timezone, currency, pay_terms, tax_rate, invoice_prefix, auto_send];
+            db.query(insertSql, params, (err2) => {
+                if (err2) {
+                    console.error('Failed to insert settings:', err2);
+                    return res.status(500).json({ error: 'Failed to insert settings' });
+                }
+                res.json({ message: 'Settings saved successfully' });
+            });
+        } else {
+            // Update existing record
+            const updateSql = `
+                UPDATE settings SET 
+                company_name = ?, 
+                support_email = ?, 
+                timezone = ?, 
+                currency = ?, 
+                pay_terms = ?, 
+                tax_rate = ?, 
+                invoice_prefix = ?, 
+                auto_send = ?
+                WHERE id = ?
+            `;
+            const params = [company_name, support_email, timezone, currency, pay_terms, tax_rate, invoice_prefix, auto_send, rows[0].id];
+            db.query(updateSql, params, (err3) => {
+                if (err3) {
+                    console.error('Failed to update settings:', err3);
+                    return res.status(500).json({ error: 'Failed to update settings' });
+                }
+                res.json({ message: 'Settings updated successfully' });
+            });
+        }
     });
 });
