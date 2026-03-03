@@ -12,7 +12,8 @@ const bcrypt=require('bcrypt');
 const app = express();
 const streamifier = require('streamifier');
 const cloudinary = require('cloudinary').v2;
-
+const jwt = require('jsonwebtoken');
+const JWT_SECRET =process.env.SECRET_KEY;
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUDNAME,
     api_key: process.env.CLOUDINARY_API,
@@ -784,7 +785,7 @@ function formatIST(dateStr, timeStr) {
         String(istDate.getMinutes()).padStart(2, '0');
     return { date: dateOut, time: timeOut };
 }
-
+/*
 // Lightweight token encode/decode without secret
 function encodeToken(payload) {
     try {
@@ -814,6 +815,42 @@ function authenticateToken(req, res, next) {
     req.user = user;
     next();
 }
+*/
+
+// Function: encodeToken (Updated to use JWT)
+function encodeToken(payload) {
+    // You can change the '24h' here to any duration you prefer
+    return jwt.sign(payload, JWT_SECRET, { expiresIn: '4h' });
+}
+
+// Function: decodeToken (Updated to use JWT)
+function decodeToken(token) {
+    try {
+        return jwt.verify(token, JWT_SECRET);
+    } catch (e) {
+        return null; // Returns null if token is expired or altered
+    }
+}
+
+// Function: authenticateToken (Updated to use JWT)
+function authenticateToken(req, res, next) {
+    const authHeader = req.headers["authorization"];
+    const token = authHeader && authHeader.split(" ")[1];
+    
+    if (!token) return res.status(401).json({ message: "No token provided" });
+
+    // jwt.verify handles both checking the secret AND the expiration time automatically
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) {
+            const message = err.name === 'TokenExpiredError' ? 'Token has expired' : 'Invalid token';
+            return res.status(403).json({ message });
+        }
+        
+        req.user = user;
+        next();
+    });
+}
+
 
 app.post("/api/dream-reflection", async (req, res) => {
   const { text, emotions } = req.body;
