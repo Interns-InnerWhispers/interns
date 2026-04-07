@@ -991,7 +991,7 @@ app.post("/api/login", async (req, res) => {
             if (currentMinutes >= lateTime && currentMinutes <= absentTime) {
                 await executeQuery(
                     `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
-                     VALUES (?, ?, 'Present', ?)`,
+                     VALUES (?, ?, 'Late', ?)`,
                     [internId, date, time]
                 );
 
