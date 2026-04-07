@@ -1016,7 +1016,7 @@ app.post("/api/login", async (req, res) => {
                     [internId, date]
                 );
 
-                return res.status(403).json({
+                return res.status(200).json({
                     message: "You are considered absent today."
                 });
             }
