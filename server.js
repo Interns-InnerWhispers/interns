@@ -896,25 +896,29 @@ app.post("/api/dream-reflection", async (req, res) => {
   }
 });
 
-//login
 app.post("/api/login", async (req, res) => {
     try {
         const { email, password } = req.body;
-        const users = await executeQuery("SELECT * FROM users WHERE email = ?", [email]);
-        
+
+        const users = await executeQuery(
+            "SELECT * FROM users WHERE email = ?", 
+            [email]
+        );
+
         if (users.length === 0) {
             return res.status(401).json({ message: "Invalid email" });
         }
 
         const user = users[0];
+
         const match = await bcrypt.compare(password, user.password_hash);
-        
         if (!match) {
             return res.status(401).json({ message: "Invalid password" });
         }
 
-        // If Intern — handle attendance
+        // 🔹 INTERN FLOW
         if (user.role.toLowerCase() === "intern") {
+
             const internResults = await executeQuery(
                 "SELECT intern_id, name FROM Interns WHERE email = ?", 
                 [email]
@@ -926,39 +930,99 @@ app.post("/api/login", async (req, res) => {
 
             const internId = internResults[0].intern_id;
 
-            // Get current IST date & time
-            const now = new Date();
-            const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)); // Convert UTC → IST
-            const date = istNow.toISOString().slice(0, 10); // YYYY-MM-DD
-            const time = istNow.toTimeString().slice(0, 8); // HH:MM:SS
+            // ✅ Get IST time properly
+            const istString = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+            const istNow = new Date(istString);
 
-            // ✅ Check if attendance already exists for today
+            const date = istNow.toISOString().slice(0, 10);
+            const time = istNow.toTimeString().slice(0, 8);
+
+            // Convert time to minutes
+            const currentMinutes = istNow.getHours() * 60 + istNow.getMinutes();
+
+            // Time boundaries
+            const startTime = 18 * 60 + 30;   // 6:30 PM
+            const lateTime = 18 * 60 + 35;    // 6:35 PM
+            const absentTime = 18 * 60 + 45;  // 6:45 PM
+
+            // 🔍 Check existing attendance
             const existingAttendance = await executeQuery(
                 `SELECT * FROM Attendance WHERE intern_id = ? AND attendance_date = ?`,
                 [internId, date]
             );
 
-            if (existingAttendance.length === 0) {
-                // Insert only if not present already
+            // If already marked → just login
+            if (existingAttendance.length > 0) {
+                const token = encodeToken({
+                    id: user.id,
+                    name: user.full_name,
+                    role: user.role,
+                    intern_id: internId
+                });
+                return res.json({ token });
+            }
+
+            // 🚨 BEFORE 6:30 PM
+            if (currentMinutes < startTime) {
+                return res.status(403).json({
+                    message: "You are too early. Please login after 18:30:00"
+                });
+            }
+
+            // ✅ 6:30 - 6:35 (ON TIME)
+            if (currentMinutes >= startTime && currentMinutes < lateTime) {
                 await executeQuery(
                     `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
                      VALUES (?, ?, 'Present', ?)`,
                     [internId, date, time]
                 );
+
+                const token = encodeToken({
+                    id: user.id,
+                    name: user.full_name,
+                    role: user.role,
+                    intern_id: internId
+                });
+
+                return res.json({ token });
             }
 
-            // Create token
-            const token = encodeToken({ 
-                id: user.id, 
-                name: user.full_name, 
-                role: user.role, 
-                intern_id: internId 
-            });
+            // ⚠️ 6:35 - 6:45 (LATE)
+            if (currentMinutes >= lateTime && currentMinutes <= absentTime) {
+                await executeQuery(
+                    `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
+                     VALUES (?, ?, 'Present', ?)`,
+                    [internId, date, time]
+                );
 
-            return res.json({ token });
+                const token = encodeToken({
+                    id: user.id,
+                    name: user.full_name,
+                    role: user.role,
+                    intern_id: internId
+                });
+
+                return res.status(200).json({
+                    message: "You are late. It will affect your performance score.",
+                    token
+                });
+            }
+
+            // ❌ AFTER 6:45 (ABSENT)
+            if (currentMinutes > absentTime) {
+                await executeQuery(
+                    `INSERT INTO Attendance (intern_id, attendance_date, status)
+                     VALUES (?, ?, 'Absent')`,
+                    [internId, date]
+                );
+
+                return res.status(403).json({
+                    message: "You are considered absent today."
+                });
+            }
         }
 
-        // For non-intern users
+        // 🔹 NON-INTERN USERS
         const token = encodeToken({ id: user.id, role: user.role });
         return res.json({ token });
 
