@@ -3053,13 +3053,11 @@ app.get("/api/profile", authenticateToken, async (req, res) => {
   try {
       console.log(req.user)
     const query = `
-      SELECT id, internrole as role, name, email, profile_image, department, status 
-      FROM interns 
-      WHERE intern_id = ?
+      SELECT id, role,username,full_name,profile_image FROM users WHERE id = ?
     `;
     
     //console.log('🔍 Querying for intern_id:', req.user?.intern_id);
-    const [results] = await executeQuery(query, [req.user.intern_id]);
+    const [results] = await executeQuery(query, [req.user.id]);
     
     //console.log('🔍 Query results:', results);
     
