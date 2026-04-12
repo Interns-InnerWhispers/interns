@@ -1,4 +1,3 @@
-  // Load environment variables
 const express = require('express');
 const helmet = require('helmet');
 const compression = require('compression');
@@ -7,6 +6,8 @@ const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const mysql = require('mysql2'); 
+const http = require('http');
+const { Server } = require("socket.io");
 require('dotenv').config();
 const bcrypt=require('bcrypt');
 const app = express();
@@ -30,26 +31,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ✅ CORS for Hostinger + your domains
 app.use(cors({
-  origin: "*"
-     /*function (origin, callback) {
-    const allowIf = (o) => {
-      if (!o) return true; // for Postman, curl, etc.
-      try {
-        const url = new URL(o);
-        const host = url.hostname.toLowerCase();
-        return (
-          host === 'localhost' ||
-          host === '127.0.0.1' ||
-          host === 'innerwhispers.in' ||
-          host === 'www.innerwhispers.in'
-        );
-      } catch {
-        return false;
-      }
-    };
-    if (allowIf(origin)) return callback(null, true);
-    return callback(new Error('Not allowed by CORS'));
-  }*/,
+  origin: "*",
   methods: "GET,POST,PUT,DELETE,OPTIONS",
   credentials: true,
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
@@ -58,39 +40,18 @@ app.use(cors({
 
 
 app.options('*', cors());
-app.set('trust proxy', 1); // trust proxy (important if behind nginx)
+app.set('trust proxy', 1); 
 
-/* ------------------------------
-   📂 File Uploads (Multer)
-------------------------------- */
-// Ensure upload folder exists
-/*const uploadDir = process.env.NODE_ENV === 'production'
-    ? '/home/u841735361/domains/innerwhispers.in/public_html/uploads'
-    : path.join(__dirname, "uploads");
 
-const uploadMembersDir = process.env.NODE_ENV === 'production'
-    ? '/home/u841735361/domains/innerwhispers.in/public_html/members'
-    : path.join(__dirname, "members");
-
-// Ensure both directories exist
-[uploadDir, uploadMembersDir].forEach(dir => {
-    try {
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
-        }
-    } catch (e) {
-        console.error('❌ Failed to create directory:', dir, e);
-    }
-});
-
-// Storage config*/
 
 const upload = multer({ storage: multer.memoryStorage() });
 
 /* ------------------------------
    🗄️ Database Setup
+   const requiredEnvVars = ['DB_HOST', 'DB_USER', 'DB_NAME','db_password'];
 ------------------------------- */
-const requiredEnvVars = ['DB_HOST', 'DB_USER', 'DB_NAME', 'DB_PASSWORD'];
+
+const requiredEnvVars = ['DB_HOST', 'DB_USER', 'DB_NAME'];
 const missing = requiredEnvVars.filter(env => !process.env[env]);
 if (missing.length > 0) {
     console.error('❌ Missing ENV vars:', missing.join(', '));
@@ -126,7 +87,7 @@ let db;
 // ✅ DB Initializer
 async function initializeDatabase() {
     try {
-        await db.query(`
+        await executeQuery(`
            CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(50) UNIQUE,
@@ -156,7 +117,7 @@ app.get('/', (req, res) => res.send('🚀 API is running on Hostinger'));
 app.get('/health', async (req, res) => {
     if (!db) return res.status(500).send('❌ DB not initialized');
     try {
-        await db.query('SELECT 1');
+        await executeQuery('SELECT 1');
         res.send('✅ Healthy');
     } catch {
         res.status(500).send('❌ DB Down');
@@ -180,17 +141,288 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: 'Something went wrong!' });
 });
 
+// ===============================
+// 📊 DASHBOARD STATS APIs  for hr index.html
+// ===============================
+
+// GET dashboard overview stats
+app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
+    try {
+        const today = getTodayIST();
+        // Get total interns count
+        const [totalInterns] = await executeQuery('SELECT COUNT(*) as count FROM Interns WHERE status = "Active"');
+        
+        // Get new hires (last 30 days)
+        const [newHires] = await executeQuery(
+            'SELECT COUNT(*) as count FROM Interns WHERE start_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)'
+        );
+        
+        // Get today's attendance
+        const [todayAttendance] = await executeQuery(
+            'SELECT status, COUNT(*) as count FROM Attendance WHERE attendance_date = ? GROUP BY status',
+            [today]
+        );
+        
+        // Get pending leave requests
+        const [pendingLeave] = await executeQuery(
+            'SELECT COUNT(*) as count FROM leave_requests WHERE status = "Pending"'
+        );
+        
+        const [onLeave] = await executeQuery(
+            `SELECT COUNT(*) as count FROM leave_requests WHERE status = "Approved" AND CURDATE() BETWEEN from_date AND to_date`
+        );
+        const [ApprovedLeaves] = await executeQuery(
+            'SELECT COUNT(*) as count FROM leave_requests WHERE status = "Approved"'
+        );
+        
+        const [RejectedLeaves] = await executeQuery(
+            'SELECT COUNT(*) as count FROM leave_requests WHERE status = "Rejected"'
+        );
+        // Get department distribution
+        const [deptData] = await executeQuery(`
+            SELECT department, COUNT(*) as count 
+            FROM Interns 
+            WHERE department IS NOT NULL AND status = "Active"
+            GROUP BY department
+        `);
+        
+        // Get weekly attendance data for trend chart
+        const [thisWeekData] = await executeQuery(`
+            SELECT 
+                DAYNAME(attendance_date) as day_name,
+                COUNT(CASE WHEN status = 'Present' THEN 1 END) * 100.0 / COUNT(*) as attendance_rate
+            FROM Attendance 
+            WHERE attendance_date BETWEEN DATE_SUB(CURDATE(), INTERVAL 6 DAY) AND CURDATE()
+            GROUP BY DAYNAME(attendance_date), attendance_date
+            ORDER BY attendance_date
+        `);
+        
+        const [lastWeekData] = await executeQuery(`
+            SELECT 
+                DAYNAME(attendance_date) as day_name,
+                COUNT(CASE WHEN status = 'Present' THEN 1 END) * 100.0 / COUNT(*) as attendance_rate
+            FROM Attendance 
+            WHERE attendance_date BETWEEN DATE_SUB(CURDATE(), INTERVAL 13 DAY) AND DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+            GROUP BY DAYNAME(attendance_date), attendance_date
+            ORDER BY attendance_date
+        `);
+        
+        // Format data for chart (ensure 7 days for each week)
+        const weeklyAttendance = {
+            thisWeek: formatWeeklyData(thisWeekData),
+            lastWeek: formatWeeklyData(lastWeekData)
+        };
+        
+        const attendanceStats = {
+            present: 0,
+            absent: 0,
+            leave: 0,
+            late: 0
+        };
+        
+        todayAttendance.forEach(row => {
+            attendanceStats[row.status.toLowerCase()] = row.count;
+        });
+        
+        // Process department data
+        const departments = ['Technology', 'Human Resources', 'Sales', 'UI/UX', 'Finance'];
+        const departmentStats = {};
+        
+        departments.forEach(dept => {
+            const found = deptData.find(d => d.department === dept);
+            departmentStats[dept] = found ? found.count : 0;
+        });
+        
+        res.json({
+            totalInterns: totalInterns[0].count,
+            newHires: newHires[0].count,
+            attendance: attendanceStats,
+            pendingLeave: pendingLeave[0].count,
+            ApprovedLeaves:ApprovedLeaves[0].count,
+            RejectedLeaves:RejectedLeaves[0].count,
+            onLeave:onLeave[0].count,
+            departments: departmentStats,
+            weeklyAttendance: weeklyAttendance
+        });
+        
+    } catch (error) {
+        console.error('Error fetching dashboard stats:', error);
+        res.status(500).json({ error: 'Failed to fetch dashboard stats' });
+    }
+});
+
+// GET attendance data for table
+app.get('/api/dashboard/attendance', authenticateToken, async (req, res) => {
+    try {
+        const { limit = 50 } = req.query;
+        const today = getTodayIST(); // Get today's date in IST format
+        
+        const [rows] = await executeQuery(`
+            SELECT 
+                i.name, 
+                i.internrole as role,
+                i.department as dept,
+                a.check_in as checkin,
+                a.status,
+                a.attendance_date
+            FROM Attendance a
+            JOIN Interns i ON a.intern_id = i.intern_id
+            WHERE a.attendance_date = ?
+            ORDER BY i.name
+            LIMIT ?
+        `, [today, parseInt(limit)]);
+        
+        const attendanceData = rows.map(row => ({
+            name: row.name,
+            role: row.role,
+            dept: row.dept || 'Unassigned',
+            checkin: row.checkin || '—',
+            status: row.status
+        }));
+        
+        res.json(attendanceData);
+        
+    } catch (error) {
+        console.error('Error fetching attendance data:', error);
+        res.status(500).json({ error: 'Failed to fetch attendance data' });
+    }
+});
+
+// GET leave requests
+app.get('/api/dashboard/leave-requests', authenticateToken, async (req, res) => {
+    try {
+        const [rows] = await executeQuery(`
+            SELECT 
+                lr.id,
+                lr.intern_id,
+                i.department,
+                lr.from_date as fromDate,
+                lr.to_date as toDate,
+                lr.number_of_working_days as days,
+                lr.reason,
+                lr.status,
+                lr.leave_type,
+                i.name as name,
+                lr.requested_at as requestedAt
+            FROM leave_requests lr
+            JOIN Interns i ON lr.intern_id = i.intern_id
+            ORDER BY lr.requested_at DESC
+            LIMIT 20
+        `);
+        console.log(rows)
+        const leaveRequests = rows.map(row => ({
+            id: row.id,
+            intern_id:row.intern_id,
+            department:row.department,
+            name: row.name,
+            type: row.leave_type,
+            startDate:row.fromDate,
+            endDate:row.toDate,
+            dates: row.fromDate === row.toDate ? 
+                    row.fromDate : 
+                    `${row.fromDate}–${row.toDate}`,
+            reason:row.reason,
+            days:row.days,
+            status: row.status
+        }));
+        console.log("leave request",leaveRequests)
+        res.json(leaveRequests);
+        
+    } catch (error) {
+        console.error('Error fetching leave requests:', error);
+        res.status(500).json({ error: 'Failed to fetch leave requests' });
+    }
+});
+
+// GET recruitment pipeline data
+app.get('/api/dashboard/pipeline', authenticateToken, async (req, res) => {
+    try {
+        // Since we don't have a recruitment table, return mock data for now
+        // This can be enhanced later with actual recruitment tracking
+        const pipeline = [
+            { stage: 'Applied', count: 40, color: '#6366f1', max: 40 },
+            { stage: 'Screening', count: 18, color: '#8b5cf6', max: 30 },
+            { stage: 'Interview', count: 10, color: '#a78bfa', max: 30 },
+            { stage: 'Selected', count: 4, color: '#16a34a', max: 30 }
+        ];
+        
+        res.json(pipeline);
+        
+    } catch (error) {
+        console.error('Error fetching pipeline data:', error);
+        res.status(500).json({ error: 'Failed to fetch pipeline data' });
+    }
+});
+
+// GET recent activities
+app.get('/api/dashboard/activities', authenticateToken, async (req, res) => {
+    try {
+        const [rows] = await executeQuery(`
+            SELECT 
+                'New employee onboarded' as activity,
+                CONCAT(i.name, ' (', i.internrole, ')') as details,
+                i.created_at as timestamp
+            FROM Interns i
+            WHERE i.created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+            ORDER BY i.created_at DESC
+            LIMIT 10
+        `);
+        
+        const activities = rows.map(row => ({
+            text: `${row.activity} — ${row.details}`,
+            time: formatTimeAgo(row.timestamp)
+        }));
+        
+        res.json(activities);
+        
+    } catch (error) {
+        console.error('Error fetching activities:', error);
+        res.status(500).json({ error: 'Failed to fetch activities' });
+    }
+});
+
+// Helper function to format time ago
+function formatTimeAgo(timestamp) {
+    const now = new Date();
+    const past = new Date(timestamp);
+    const diffMs = now - past;
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffHours / 24);
+    
+    if (diffDays > 0) {
+        return `${diffDays} days ago`;
+    } else if (diffHours > 0) {
+        return `${diffHours} hours ago`;
+    } else {
+        return 'Just now';
+    }
+}
+
+// Helper function to format weekly attendance data
+function formatWeeklyData(data) {
+    const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const result = new Array(7).fill(0); // Default to 0% for all days
+    
+    data.forEach(row => {
+        const dayIndex = daysOfWeek.indexOf(row.day_name);
+        if (dayIndex !== -1) {
+            result[dayIndex] = Math.round(parseFloat(row.attendance_rate) || 0);
+        }
+    });
+    
+    // If no data for weekends, set to 0
+    return result;
+}
+
 /* ------------------------------
    🚀 Start Server
 ------------------------------- */
-
-
 
 function executeQuery(sql, params = []) {
     return new Promise((resolve, reject) => {
         db.query(sql, params, (err, results) => {
             if (err) return reject(err);
-            resolve(results);
+            resolve([results]);
         });
     });
 }
@@ -244,7 +476,36 @@ if (process.env.NODE_ENV === 'production') {
    🚀 Start Server
 ------------------------------- */
 
-const server = app.listen(PORT, '0.0.0.0', () => {
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+  console.log('🔌 User connected:', socket.id);
+  
+  // Join HR dashboard room
+  socket.on('join-hr-dashboard', () => {
+    socket.join('hr-dashboard');
+    console.log('👤 User joined HR dashboard room');
+  });
+  
+  // Join intern room for personal updates
+  socket.on('join-intern-room', (internId) => {
+    socket.join(`intern-${internId}`);
+    console.log(`👨‍💻 Intern ${internId} joined their room`);
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('🔌 User disconnected:', socket.id);
+  });
+});
+
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
 });
 
@@ -462,10 +723,33 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
 
 `;
 
-    db.query(createDoctorUITableQuery, (err) => {
+db.query(createDoctorUITableQuery, (err) => {
         if (err) return console.error('Error creating doctor_ui table:', err);
         console.log('Doctor_ui details table created');
     });
+
+    //inern table
+    
+    const createTeamTable = `
+       CREATE TABLE IF NOT EXISTS ${Q('Teams')} (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        team_name VARCHAR(50) NOT NULL,
+        team_leader_id INT NOT NULL,
+        team_size INT NOT NULL,
+        team_description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (team_leader_id) REFERENCES Interns(id)
+       )
+    
+
+    `;
+
+    db.query(createTeamTable, (err) => {
+        if (err) return console.error('Error creating Teams table:', err);
+        console.log('Teams details table created');
+    });
+    
     //inern table
     const createInternTable = `
         CREATE TABLE IF NOT EXISTS ${Q('Interns')} (
@@ -478,16 +762,47 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     university VARCHAR(255),
     performance_score DECIMAL(5,2) DEFAULT 0.00,
     start_date DATE NOT NULL DEFAULT (CURRENT_DATE),
-    end_date DATE NOT NULL DEFAULT (CURRENT_DATE)
+    end_date DATE NOT NULL DEFAULT (CURRENT_DATE),
+    department VARCHAR(50),
+    HR_id int,
+    Team_id int,
+    attendance_percentage DECIMAL(5,2) DEFAULT 0.00,
+    profile_image VARCHAR(255),
+    status ENUM('Active', 'Inactive', 'Completed') DEFAULT 'Active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
     `;
 
     db.query(createInternTable, (err) => {
         if (err) {
-            console.error('Error creating prescriptions table:', err);
+            console.error('Error creating Interns table:', err);
         }
     });
+    async function updateInternsTable() {
+    try {
+        await db.query(`
+            ALTER TABLE Interns
+            ADD COLUMN department VARCHAR(50),
+            ADD COLUMN HR_id INT,
+            ADD COLUMN Team_id INT,
+            ADD COLUMN attendance_percentage DECIMAL(5,2) DEFAULT 0.00,
+            ADD COLUMN profile_image VARCHAR(255),
+            ADD COLUMN status ENUM('Active', 'Inactive', 'Completed') DEFAULT 'Active',
+            ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        `);
+
+        console.log("✅ Interns table updated successfully");
+    } catch (err) {
+        console.error("❌ Update Error:", err.message);
+    }
+}
+updateInternsTable();
+    // Add foreign key constraints for Interns table
+    db.query("ALTER TABLE Interns ADD CONSTRAINT fk_intern_hr FOREIGN KEY (HR_id) REFERENCES Interns(id)", () => {});
+    db.query("ALTER TABLE Interns ADD CONSTRAINT fk_intern_team FOREIGN KEY (Team_id) REFERENCES Teams(id)", () => {});
 
     //attendence table
     const createAttendenceTable = `
@@ -495,9 +810,11 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     id INT AUTO_INCREMENT PRIMARY KEY,
     intern_id VARCHAR(10) NOT NULL,
     attendance_date DATE NOT NULL,
-    status ENUM('Present', 'Absent', 'Leave') DEFAULT 'Absent',
+    status ENUM('Present', 'Absent', 'Leave', 'Late') DEFAULT 'Absent',
     check_in TIME NULL,
     check_out TIME NULL,
+    hours_worked DECIMAL(4,2) DEFAULT 0.00,
+    note TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (intern_id) REFERENCES Interns(intern_id)
@@ -511,7 +828,22 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
             console.error('Error creating prescriptions table:', err);
         }
     });
+async function UpdateAttendanceTable() {
+    const queries = [
+        `ALTER TABLE Attendance ADD COLUMN hours_worked DECIMAL(4,2) DEFAULT 0.00`,
+        `ALTER TABLE Attendance ADD COLUMN note TEXT`,
+        `ALTER TABLE Attendance MODIFY COLUMN status ENUM('Present','Absent','Leave','Late') DEFAULT 'Absent`
+    ];
 
+    for (let q of queries) {
+        try {
+            await db.query(q);
+        } catch (e) {}
+    }
+
+    console.log("✅ Attendance table safely updated");
+}
+UpdateAttendanceTable();
     //attendence table
     const createReportsTable = `
     CREATE TABLE IF NOT EXISTS ${Q('Reports')} (
@@ -520,10 +852,14 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     report_title VARCHAR(50),
     report_description TEXT,
     file_path VARCHAR(255),
-    status ENUM('Pending', 'Reviewed', 'Rejected') DEFAULT 'Pending',
+    report_type VARCHAR(50) DEFAULT 'weekly',
+    status ENUM('Pending', 'Reviewed', 'Rejected', 'Submitted') DEFAULT 'Submitted',
     due_date DATE,
+    submission_date DATE,
     submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     reviewed_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (intern_id) REFERENCES Interns(intern_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -531,11 +867,85 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
 
     db.query(createReportsTable, (err) => {
         if (err) {
-            console.error('Error creating prescriptions table:', err);
+            console.error('Error creating reports table:', err);
         }
     });
 
+    async function UpdateReportsTable() {
+    const queries = [
+        `ALTER TABLE Reports ADD COLUMN report_type VARCHAR(50) DEFAULT 'weekly'`,
+        `ALTER TABLE Reports ADD COLUMN submission_date DATE`,
+        `ALTER TABLE Reports ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+        `ALTER TABLE Reports ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`,
+        `ALTER TABLE Reports MODIFY COLUMN status ENUM('Pending','Reviewed','Rejected','Submitted') DEFAULT 'Submitted'`
+    ];
 
+    for (let q of queries) {
+        try {
+            await db.query(q);
+        } catch (e) {}
+    }
+
+    console.log("✅ Reports table safely updated");
+}
+
+UpdateReportsTable();
+    // Weekly report tracking table for reports.html
+    const createWeeklyReportsTable = `
+    CREATE TABLE IF NOT EXISTS ${Q('weekly_reports')} (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    intern_id VARCHAR(10) NOT NULL,
+    week_start_date DATE NOT NULL,
+    wednesday_status ENUM('Submitted', 'Missing') DEFAULT 'Missing',
+    saturday_status ENUM('Submitted', 'Missing') DEFAULT 'Missing',
+    last_submission_date DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (intern_id) REFERENCES Interns(intern_id),
+    UNIQUE KEY unique_intern_week (intern_id, week_start_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+    `;
+
+    db.query(createWeeklyReportsTable, (err) => {
+        if (err) {
+            console.error('Error creating weekly reports table:', err);
+        } else {
+            console.log('✅ Weekly reports table created successfully');
+            
+            // After table creation, populate it with all existing interns
+            const currentWeekStart = new Date();
+            const dayOfWeek = currentWeekStart.getDay();
+            const diff = currentWeekStart.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+            currentWeekStart.setDate(diff);
+            const weekStartDate = currentWeekStart.toISOString().split('T')[0];
+
+            // Query to insert all existing interns into weekly_reports table
+            const populateWeeklyReports = `
+                INSERT INTO weekly_reports 
+                (intern_id, week_start_date, wednesday_status, saturday_status)
+  
+                     SELECT i.intern_id, ?, 'Missing', 'Missing'
+                        FROM Interns i
+  
+                    LEFT JOIN weekly_reports wr 
+                      ON i.intern_id = wr.intern_id 
+                      AND wr.week_start_date = ?
+
+                    WHERE wr.intern_id IS NULL
+            `;
+
+            db.query(populateWeeklyReports, [weekStartDate, weekStartDate], (err, result) => {
+                if (err) {
+                    console.error('Error populating weekly reports table:', err);
+                } else {
+                    console.log(`✅ Weekly reports table populated with ${result.affectedRows} interns`);
+                }
+            });
+        }
+    });
+    
+    
 
     //attendence table
     const createDocumentsTable = `
@@ -545,9 +955,13 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     doc_title VARCHAR(50) NOT NULL,
     doc_description TEXT,
     file_path VARCHAR(255),
-    uploaded_by ENUM('Intern','HR', 'Lead'),
+    file_size INT,
+    category VARCHAR(50) DEFAULT 'General',
+    uploaded_by ENUM('Intern','HR', 'Lead') DEFAULT 'Intern',
     status ENUM('Pending', 'Reviewed', 'Rejected') DEFAULT 'Pending',
-    upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,                
+    upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,                
     FOREIGN KEY (intern_id) REFERENCES Interns(intern_id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -562,6 +976,26 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     // Ensure missing columns exist (safety for older schema)
     db.query("ALTER TABLE Documents ADD COLUMN IF NOT EXISTS status ENUM('Pending','Reviewed','Rejected') DEFAULT 'Pending'", () => {});
     db.query("ALTER TABLE Documents ADD COLUMN IF NOT EXISTS uploaded_by ENUM('Intern','HR','Lead') DEFAULT 'Intern'", () => {});
+
+    async function UpdateDocumentsTable() {
+    const queries = [
+        `ALTER TABLE Documents ADD COLUMN file_size INT`,
+        `ALTER TABLE Documents ADD COLUMN category VARCHAR(50) DEFAULT 'General'`,
+        `ALTER TABLE Documents ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+        `ALTER TABLE Documents ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`,
+        `ALTER TABLE Documents MODIFY COLUMN uploaded_by ENUM('Intern','HR','Lead') DEFAULT 'Intern'`
+    ];
+
+    for (let q of queries) {
+        try {
+            await db.query(q);
+        } catch (e) {}
+    }
+
+    console.log("✅ Documents table safely updated");
+}
+UpdateDocumentsTable();
+
     const createTaskTable = `
     CREATE TABLE IF NOT EXISTS ${Q('Tasks')} (
     task_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -607,7 +1041,16 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
 
     db.query(createLeaveTable, (err) => {
         if (err) {
-            console.error('Error creating prescriptions table:', err);
+            console.error('Error creating leave requests table:', err);
+        }
+    });
+    
+    // Add leave_type column if it doesn't exist
+    db.query("ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS leave_type ENUM('Sick', 'Casual', 'Annual', 'Maternity', 'Paternity') DEFAULT 'Casual'", (err) => {
+        if (err) {
+            console.error('Error adding leave_type column:', err);
+        } else {
+            console.log('✅ leave_type column added to leave_requests table');
         }
     });
 
@@ -727,6 +1170,68 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
         if (err) return console.error('Error creating receipts table:', err);
         console.log('✅ Receipts table ready');
     });
+
+    // Create notifications table
+    const createNotificationsTable = `
+        CREATE TABLE IF NOT EXISTS Notifications (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            notify VARCHAR(255) NOT NULL,
+            description TEXT NOT NULL,
+            type ENUM('info', 'success', 'warning', 'error') DEFAULT 'info',
+            target_user_id VARCHAR(50) NULL,
+            target_role ENUM('hr', 'intern', 'all') DEFAULT 'all',
+            is_read BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `;
+    
+    db.query(createNotificationsTable, (err) => {
+        if (err) return console.error('Error creating notifications table:', err);
+        console.log('✅ Notifications table ready');
+    });
+
+    // Helper function to create notifications
+    async function createNotification(notify, description, type = 'info', targetUserId = null, targetRole = 'all') {
+        try {
+            const [result] = await db.query(
+                'INSERT INTO Notifications (notify, description, type, target_user_id, target_role) VALUES (?, ?, ?, ?, ?)',
+                [notify, description, type, targetUserId, targetRole]
+            );
+            
+            const notificationId = result.insertId;
+            
+            // Emit real-time notification
+            const notificationData = {
+                id: notificationId,
+                notify,
+                description,
+                type,
+                target_user_id: targetUserId,
+                target_role: targetRole,
+                created_at: new Date().toISOString()
+            };
+            
+            // Send to appropriate rooms
+            if (targetUserId) {
+                io.to(`intern-${targetUserId}`).emit('new-notification', notificationData);
+            }
+            
+            if (targetRole === 'hr' || targetRole === 'all') {
+                io.to('hr-dashboard').emit('new-notification', notificationData);
+            }
+            
+            if (targetRole === 'intern' || targetRole === 'all') {
+                io.emit('new-notification', notificationData); // Send to all connected clients
+            }
+            
+            console.log('📢 Notification created and sent:', notificationData);
+            return notificationId;
+        } catch (error) {
+            console.error('Error creating notification:', error);
+            throw error;
+        }
+    }
 }
 
 // Update migration function for the new schema
@@ -785,37 +1290,6 @@ function formatIST(dateStr, timeStr) {
         String(istDate.getMinutes()).padStart(2, '0');
     return { date: dateOut, time: timeOut };
 }
-/*
-// Lightweight token encode/decode without secret
-function encodeToken(payload) {
-    try {
-        return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
-    } catch (e) {
-        return null;
-    }
-}
-
-function decodeToken(token) {
-    try {
-        const json = Buffer.from(token, 'base64').toString('utf8');
-        return JSON.parse(json);
-    } catch (e) {
-        return null;
-    }
-}
-
-//function to get the doctor id
-function authenticateToken(req, res, next) {
-    const authHeader = req.headers["authorization"];
-    const token = authHeader && authHeader.split(" ")[1];
-    if (!token) return res.status(401).json({ message: "No token provided" });
-
-    const user = decodeToken(token);
-    if (!user) return res.status(403).json({ message: "Invalid token" });
-    req.user = user;
-    next();
-}
-*/
 
 // Function: encodeToken (Updated to use JWT)
 function encodeToken(payload) {
@@ -895,134 +1369,576 @@ app.post("/api/dream-reflection", async (req, res) => {
     res.status(500).json({ reflection: "Failed to get dream reflection." });
   }
 });
+//apis for hr dashboard
+// API endpoints for dashboard data
+app.get('/api/interns-count', async (req, res) => {
+    try {
+        const [rows] = await executeQuery('SELECT COUNT(*) as total FROM Interns');
+        const [newHires] = await executeQuery('SELECT COUNT(*) as count FROM Interns WHERE start_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)');
+        res.json({ 
+            total: rows[0].total || 0, 
+            newHires: newHires[0].count || 0 
+        });
+    } catch (error) {
+        console.error('Error fetching intern count:', error);
+        res.status(500).json({ error: 'Failed to fetch intern count' });
+    }
+});
+
+// API to get all interns data
+app.get('/api/interns', authenticateToken, async (req, res) => {
+    try {
+        const [interns] = await executeQuery(`
+            SELECT 
+               *
+            FROM Interns 
+            ORDER BY created_at DESC
+        `);
+        
+        // Transform data to match frontend expectations
+        const transformedInterns = interns.map(intern => ({
+            id: intern.intern_id,
+            name: intern.name,
+            email: intern.email,
+            phone: intern.phone,
+            dept: intern.department,
+            department: intern.department,
+            role: intern.internrole,
+            mentor: 'Not Assigned', 
+            start: intern.start_date,
+            end: intern.end_date,
+            status: intern.status,
+            attendance: intern.attendance_percentage || 0,
+            wed: 'Missing', 
+            sat: 'Missing',
+            university: intern.university || 'N/A',
+            performance_score: intern.performance_score || 0,
+            hr_id: intern.HR_id || 'N/A',
+            team_id: intern.Team_id || 'N/A',
+            profile_image: intern.profile_image || null,
+            createdAt: intern.created_at,
+            updatedAt: intern.updated_at
+        }));
+        
+        res.json({ interns: transformedInterns });
+    } catch (error) {
+        console.error('Error fetching interns:', error);
+        res.status(500).json({ error: 'Failed to fetch interns data' });
+    }
+});
+
+app.get('/api/attendance/daily', async (req, res) => {
+    try {
+        const { date } = req.query;
+        const attendanceDate = date || getTodayIST();
+        
+        const [present] = await executeQuery(
+            'SELECT COUNT(*) as count FROM Attendance WHERE attendance_date = ? AND status = "Present"',
+            [attendanceDate]
+        );
+        
+        const [leave] = await executeQuery(
+            'SELECT COUNT(*) as count FROM Attendance WHERE attendance_date = ? AND status = "Leave"',
+            [attendanceDate]
+        );
+        
+        res.json({ 
+            present: present[0].count || 0,
+            leave: leave[0].count || 0
+        });
+    } catch (error) {
+        console.error('Error fetching daily attendance:', error);
+        res.status(500).json({ error: 'Failed to fetch daily attendance' });
+    }
+});
+
+app.get('/api/attendance/records', authenticateToken, async (req, res) => {
+    try {
+        const { date } = req.query;
+        const attendanceDate = date || getTodayIST();
+        
+        const [rows] = await executeQuery(`
+            SELECT a.id, a.intern_id, a.attendance_date, a.check_in, a.check_out, a.status, a.note,
+                   i.name, i.department
+            FROM Attendance a
+            LEFT JOIN Interns i ON a.intern_id = i.intern_id
+            WHERE a.attendance_date = ?
+            ORDER BY i.name
+        `, [attendanceDate]);
+        
+        res.json(rows);
+    } catch (error) {
+        console.error('Error fetching attendance records:', error);
+        res.status(500).json({ error: 'Failed to fetch attendance records' });
+    }
+});
+
+// POST endpoint to mark attendance
+app.post('/api/attendance', authenticateToken, async (req, res) => {
+    try {
+        const { intern_id, attendance_date, check_in, check_out, status, note } = req.body;
+        
+        if (!intern_id || !attendance_date || !status) {
+            return res.status(400).json({ error: 'intern_id, attendance_date, and status are required' });
+        }
+        
+        // Check if attendance record already exists
+        const [existing] = await executeQuery(
+            'SELECT id FROM Attendance WHERE intern_id = ? AND attendance_date = ?',
+            [intern_id, attendance_date]
+        );
+        
+        if (existing && existing.length > 0) {
+            return res.status(400).json({ error: 'Attendance record already exists for this date' });
+        }
+        
+        // Insert new attendance record
+        const [result] = await executeQuery(`
+            INSERT INTO Attendance (intern_id, attendance_date, check_in, check_out, status, note)
+            VALUES (?, ?, ?, ?, ?, ?)
+        `, [intern_id, attendance_date, check_in, check_out, status, note]);
+        
+        res.json({ 
+            success: true, 
+            message: 'Attendance marked successfully',
+            id: result.insertId 
+        });
+    } catch (error) {
+        console.error('Error marking attendance:', error);
+        res.status(500).json({ error: 'Failed to mark attendance' });
+    }
+});
+
+// PUT endpoint to update attendance
+app.put('/api/attendance/:id', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { check_in, check_out, status, note } = req.body;
+        
+        if (!id) {
+            return res.status(400).json({ error: 'Attendance ID is required' });
+        }
+        
+        // Update attendance record
+        const [result] = await executeQuery(`
+            UPDATE Attendance 
+            SET check_in = ?, check_out = ?, status = ?, note = ?
+            WHERE id = ?
+        `, [check_in, check_out, status, note, id]);
+        
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Attendance record not found' });
+        }
+        
+        res.json({ 
+            success: true, 
+            message: 'Attendance updated successfully' 
+        });
+    } catch (error) {
+        console.error('Error updating attendance:', error);
+        res.status(500).json({ error: 'Failed to update attendance' });
+    }
+});
+
+app.get('/api/attendance/allweekly', async (req, res) => {
+    try {
+        const [rows] = await executeQuery(`
+            SELECT 
+                DAYNAME(attendance_date) as day,
+                ROUND(AVG(CASE WHEN status = 'Present' THEN 100 ELSE 0 END)) as attendance
+            FROM Attendance 
+            WHERE attendance_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+            GROUP BY DAYNAME(attendance_date)
+            ORDER BY attendance_date
+        `);
+        
+        const labels = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+        const data = labels.map(day => {
+            const found = rows.find(r => r.day.startsWith(day.substring(0, 3)));
+            return found ? found.attendance : 0;
+        });
+        
+        res.json({ labels, data });
+    } catch (error) {
+        console.error('Error fetching weekly attendance:', error);
+        res.json({ labels: ["Mon", "Tue", "Wed", "Thu", "Fri"], data: [0, 0, 0, 0, 0] });
+    }
+});
+
+app.get('/api/departments/performance', async (req, res) => {
+    try {
+        const [rows] = await executeQuery(`
+            SELECT 
+                'HR' as department,
+                ROUND(AVG(CASE WHEN status = 'Present' THEN 100 ELSE 0 END)) as performance
+            FROM Attendance a
+            JOIN Interns i ON a.intern_id = i.intern_id
+            WHERE i.internrole LIKE '%HR%' AND a.attendance_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            
+            UNION ALL
+            
+            SELECT 
+                'Development' as department,
+                ROUND(AVG(CASE WHEN status = 'Present' THEN 100 ELSE 0 END)) as performance
+            FROM Attendance a
+            JOIN Interns i ON a.intern_id = i.intern_id
+            WHERE i.internrole LIKE '%Dev%' AND a.attendance_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            
+            UNION ALL
+            
+            SELECT 
+                'Design' as department,
+                ROUND(AVG(CASE WHEN status = 'Present' THEN 100 ELSE 0 END)) as performance
+            FROM Attendance a
+            JOIN Interns i ON a.intern_id = i.intern_id
+            WHERE i.internrole LIKE '%Design%' AND a.attendance_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        `);
+        
+        const labels = ["HR", "Development", "Design"];
+        const data = labels.map(dept => {
+            const found = rows.find(r => r.department === dept);
+            return found ? found.performance : 0;
+        });
+        
+        res.json({ labels, data });
+    } catch (error) {
+        console.error('Error fetching department performance:', error);
+        res.json({ labels: ["HR", "Development", "Design"], data: [0, 0, 0] });
+    }
+});
+
+app.get('/api/attendance/status', async (req, res) => {
+    try {
+        const [rows] = await executeQuery(`
+            SELECT 
+                SUM(CASE WHEN status = 'Present' THEN 1 ELSE 0 END) as present,
+                SUM(CASE WHEN status = 'Leave' THEN 1 ELSE 0 END) as leave,
+                SUM(CASE WHEN status = 'Absent' THEN 1 ELSE 0 END) as absent
+            FROM Attendance 
+            WHERE attendance_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        `);
+        
+        res.json(rows[0] || { present: 0, leave: 0, absent: 0 });
+    } catch (error) {
+        console.error('Error fetching attendance status:', error);
+        res.json({ present: 0, leave: 0, absent: 0 });
+    }
+});
+
+app.get('/api/attendance/trends', async (req, res) => {
+    try {
+        const { days = 7 } = req.query;
+        const daysNum = parseInt(days);
+        
+        // Calculate date ranges for comparison
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        // Current period (this week/fortnight/month)
+        const currentStart = new Date(today);
+        currentStart.setDate(today.getDate() - daysNum + 1);
+        
+        // Previous period (last week/fortnight/month) - same duration, ending before current period starts
+        const previousEnd = new Date(currentStart);
+        previousEnd.setDate(previousEnd.getDate() - 1);
+        const previousStart = new Date(previousEnd);
+        previousStart.setDate(previousEnd.getDate() - daysNum + 1);
+        
+        // Get current period data
+        const [currentRows] = await executeQuery(`
+            SELECT 
+                attendance_date,
+                SUM(CASE WHEN status = 'Present' THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as attendance
+            FROM Attendance 
+            WHERE attendance_date >= ? AND attendance_date <= ?
+            GROUP BY attendance_date
+            ORDER BY attendance_date
+        `, [currentStart.toISOString().split('T')[0], today.toISOString().split('T')[0]]);
+        
+        // Get previous period data
+        const [previousRows] = await executeQuery(`
+            SELECT 
+                attendance_date,
+                SUM(CASE WHEN status = 'Present' THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as attendance
+            FROM Attendance 
+            WHERE attendance_date >= ? AND attendance_date <= ?
+            GROUP BY attendance_date
+            ORDER BY attendance_date
+        `, [previousStart.toISOString().split('T')[0], previousEnd.toISOString().split('T')[0]]);
+        
+        // Generate data arrays
+        const labels = [];
+        const thisWeekData = [];
+        const lastWeekData = [];
+        
+        for (let i = 0; i < daysNum; i++) {
+            const currentDate = new Date(currentStart);
+            currentDate.setDate(currentStart.getDate() + i);
+            
+            // Format label as "Month Day"
+            const label = currentDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            labels.push(label);
+            
+            // Find current period data for this date
+            const currentMatch = currentRows.find(r => 
+                new Date(r.attendance_date).toDateString() === currentDate.toDateString()
+            );
+            thisWeekData.push(currentMatch ? Math.round(currentMatch.attendance) : 0);
+            
+            // Find previous period data (shifted by daysNum days)
+            const previousDate = new Date(currentDate);
+            previousDate.setDate(currentDate.getDate() - daysNum);
+            const previousMatch = previousRows.find(r => 
+                new Date(r.attendance_date).toDateString() === previousDate.toDateString()
+            );
+            lastWeekData.push(previousMatch ? Math.round(previousMatch.attendance) : 0);
+        }
+        
+        res.json({ 
+            labels, 
+            thisWeek: thisWeekData, 
+            lastWeek: lastWeekData 
+        });
+    } catch (error) {
+        console.error('Error fetching attendance trends:', error);
+        // Return empty data structure
+        const days = parseInt(req.query.days) || 7;
+        const labels = [];
+        const thisWeek = [];
+        const lastWeek = [];
+        
+        for (let i = 0; i < days; i++) {
+            const date = new Date();
+            date.setDate(date.getDate() - (days - 1 - i));
+            labels.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+            thisWeek.push(0);
+            lastWeek.push(0);
+        }
+        
+        res.json({ labels, thisWeek, lastWeek });
+    }
+});
+
+app.get('/api/leave-requests/pending', async (req, res) => {
+    try {
+        const [rows] = await executeQuery('SELECT COUNT(*) as count FROM leave_requests WHERE status = "Pending"');
+        res.json({ onLeave: rows[0].count || 0 });
+    } catch (error) {
+        console.error('Error fetching leave requests:', error);
+        res.json({ onLeave: 0 });
+    }
+});
+
+// Notification API endpoints
+app.get('/api/notifications', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const userRole = req.user.role; 
+        const { limit = 20, unread_only = false } = req.query;
+        
+        let whereClause = 'WHERE 1=1';
+        const params = [];
+        
+        // Filter by user or role
+        if (userId) {
+            whereClause += ' AND (target_user_id = ? OR target_role = "all" OR target_role = ?)';
+            params.push(userId, userRole);
+        } else if (userRole) {
+            whereClause += ' AND (target_role = ? OR target_role = "all")';
+            params.push(userRole);
+        }
+        
+        if (unread_only === 'true') {
+            whereClause += ' AND is_read = false';
+        }
+        
+        const [rows] = await executeQuery(`
+            SELECT id, notify as title, description, type, target_user_id, target_role, is_read as isRead, 
+                   created_at as createdAt
+            FROM Notifications 
+            ${whereClause}
+            ORDER BY created_at DESC
+            LIMIT ?
+        `, [...params, parseInt(limit)]);
+        
+        res.json(rows);
+    } catch (error) {
+        console.error('Error fetching notifications:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+app.post('/api/notifications', async (req, res) => {
+    try {
+        const { notify, description, type, targetUserId, targetRole } = req.body;
+        
+        if (!notify || !description) {
+            return res.status(400).json({ error: 'notify and description are required' });
+        }
+        
+        const notificationId = await createNotification(notify, description, type, targetUserId, targetRole);
+        
+        res.json({ 
+            success: true, 
+            message: 'Notification created successfully',
+            id: notificationId 
+        });
+    } catch (error) {
+        console.error('Error creating notification:', error);
+        res.status(500).json({ error: 'Failed to create notification' });
+    }
+});
+
+app.put('/api/notifications/:id/read', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        await executeQuery('UPDATE Notifications SET is_read = TRUE WHERE id = ?', [id]);
+        
+        res.json({ success: true, message: 'Notification marked as read' });
+    } catch (error) {
+        console.error('Error marking notification as read:', error);
+        res.status(500).json({ error: 'Failed to update notification' });
+    }
+});
+
+app.put('/api/notifications/read-all', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const userRole = req.user.role;
+        
+        let whereClause = 'WHERE 1=1';
+        const params = [];
+        
+        if (userId) {
+            whereClause += ' AND (target_user_id = ? OR target_role = "all" OR target_role = ?)';
+            params.push(userId, userRole);
+        } else if (userRole) {
+            whereClause += ' AND (target_role = ? OR target_role = "all")';
+            params.push(userRole, userRole);
+        }
+        
+        await executeQuery(`UPDATE Notifications SET is_read = TRUE ${whereClause}`, params);
+        
+        res.json({ success: true, message: 'All notifications marked as read' });
+    } catch (error) {
+        console.error('Error marking all notifications as read:', error);
+        res.status(500).json({ error: 'Failed to update notifications' });
+    }
+});
+
+app.get('/api/notifications/unread-count', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const userRole = req.user.role;
+
+        let whereClause = 'WHERE is_read = FALSE';
+        const params = [];
+
+        if (userId) {
+            whereClause += ' AND (target_user_id = ? OR target_role = "all" OR target_role = ?)';
+            params.push(userId, userRole);
+        } else if (userRole) {
+            whereClause += ' AND (target_role = ? OR target_role = "all")';
+            params.push(userRole);
+        }
+
+        const [rows] = await executeQuery(`SELECT COUNT(*) as count FROM Notifications ${whereClause}`, params);
+
+        res.json({ unreadCount: rows[0]?.count || 0 });
+
+    } catch (error) {
+        console.error('FULL ERROR:', error);
+        res.status(500).json({ error: 'Failed to fetch unread count' });
+    }
+});
 
 app.post("/api/login", async (req, res) => {
     try {
         const { email, password } = req.body;
-
-        const users = await executeQuery(
-            "SELECT * FROM users WHERE email = ?", 
-            [email]
-        );
-
+        console.log(email," ", password)
+        const [users] = await executeQuery("SELECT * FROM users WHERE email = ?", [email]);
+        
         if (users.length === 0) {
             return res.status(401).json({ message: "Invalid email" });
         }
 
         const user = users[0];
-
+        
+        // Check if password_hash exists
+        if (!user.password_hash) {
+            console.error('User found but no password_hash:', user);
+            return res.status(401).json({ message: "Invalid credentials" });
+        }
+        
         const match = await bcrypt.compare(password, user.password_hash);
+        
         if (!match) {
             return res.status(401).json({ message: "Invalid password" });
         }
-
-        // 🔹 INTERN FLOW
+        console.log("user role",user.role)
+        // If Intern — handle attendance
         if (user.role.toLowerCase() === "intern") {
-
             const internResults = await executeQuery(
                 "SELECT intern_id, name FROM Interns WHERE email = ?", 
                 [email]
-            );
+            ); 
 
             if (internResults.length === 0) {
                 return res.status(401).json({ message: "Intern not found" });
             }
 
-            const internId = internResults[0].intern_id;
+            const internId = internResults[0][0].intern_id;
+            console.log(internResults)
+            console.log(internId)
 
-            // ✅ Get IST time properly
-            const istString = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
-            const istNow = new Date(istString);
+            // Get current IST date & time
+            const now = new Date();
+            const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)); // Convert UTC → IST
+            const date = istNow.toISOString().slice(0, 10); // YYYY-MM-DD
+            const time = istNow.toTimeString().slice(0, 8); // HH:MM:SS
 
-            const date = istNow.toISOString().slice(0, 10);
-            const time = istNow.toTimeString().slice(0, 8);
-
-            // Convert time to minutes
-            const currentMinutes = istNow.getHours() * 60 + istNow.getMinutes();
-
-            // Time boundaries
-            const startTime = 18 * 60 + 30;   // 6:30 PM
-            const lateTime = 18 * 60 + 35;    // 6:35 PM
-            const absentTime = 18 * 60 + 45;  // 6:45 PM
-
-            // 🔍 Check existing attendance
+            // ✅ Check if attendance already exists for today
             const existingAttendance = await executeQuery(
                 `SELECT * FROM Attendance WHERE intern_id = ? AND attendance_date = ?`,
                 [internId, date]
             );
 
-            // If already marked → just login
-            if (existingAttendance.length > 0) {
-                const token = encodeToken({
-                    id: user.id,
-                    name: user.full_name,
-                    role: user.role,
-                    intern_id: internId
-                });
-                return res.json({ token });
-            }
-
-            // 🚨 BEFORE 6:30 PM
-          //  if (currentMinutes < startTime) {
-            //    return res.status(200).json({
-              //      message: "You are too early. Please login after 18:30:00"
-                //});
-         //   }
-
-            // ✅ 6:30 - 6:35 (ON TIME)
-            if (currentMinutes >= startTime && currentMinutes < lateTime) {
+            if (existingAttendance.length === 0) {
+                // Insert only if not present already
                 await executeQuery(
                     `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
                      VALUES (?, ?, 'Present', ?)`,
                     [internId, date, time]
                 );
-
-                const token = encodeToken({
-                    id: user.id,
-                    name: user.full_name,
-                    role: user.role,
-                    intern_id: internId
+                //1
+                // Emit real-time attendance update
+                io.to('hr-dashboard').emit('attendance-update', {
+                    intern_id: internId,
+                    action: 'check-in',
+                    time: time,
+                    date: date
                 });
-
-                return res.json({ token });
-            }
-
-            // ⚠️ 6:35 - 6:45 (LATE)
-            if (currentMinutes >= lateTime && currentMinutes <= absentTime) {
-                await executeQuery(
-                    `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
-                     VALUES (?, ?, 'Late', ?)`,
-                    [internId, date, time]
-                );
-
-                const token = encodeToken({
-                    id: user.id,
-                    name: user.full_name,
-                    role: user.role,
-                    intern_id: internId
-                });
-
-                return res.status(200).json({
-                    message: "You are late. It will affect your performance score.",
-                    token
+                
+                io.to(`intern-${internId}`).emit('personal-attendance', {
+                    action: 'check-in',
+                    time: time,
+                    date: date
                 });
             }
 
-            // ❌ AFTER 6:45 (ABSENT)
-            if (currentMinutes > absentTime) {
-                await executeQuery(
-                    `INSERT INTO Attendance (intern_id, attendance_date, status)
-                     VALUES (?, ?, 'Absent')`,
-                    [internId, date]
-                );
+            // Create token
+            const token = encodeToken({ 
+                id: user.id, 
+                name: user.full_name, 
+                role: user.role, 
+                intern_id: internId 
+            });
 
-                return res.status(200).json({
-                    message: "You are considered absent today."
-                });
-            }
+            return res.json({ token });
         }
 
-        // 🔹 NON-INTERN USERS
+        // For non-intern users
         const token = encodeToken({ id: user.id, role: user.role });
         return res.json({ token });
 
@@ -1069,22 +1985,16 @@ app.post('/api/forgotpass', (req, res) => {
 //for register
 app.post("/api/register", upload.single("profileImage"), async (req, res) => {
     try {
-        console.log(req.body);
-
-        // Get fields from form
         const { username, email, password, fullname, ph, department, internRole, internid } = req.body;
-
-        // Hash password
+        
         const hashed_pass = bcrypt.hashSync(password, 10);
 
-        // Handle uploaded file
         if (!req.file) {
             return res.status(400).json({ error: "Profile image is required" });
         }
-        console.log(department)
 
-        // Upload profile pic to Cloudinary under sample/{username}/profile_pic
-        const result = await new Promise((resolve, reject) => {
+        // Upload to Cloudinary
+        const uploadResult = await new Promise((resolve, reject) => {
             const uploadStream = cloudinary.uploader.upload_stream(
                 {
                     folder: `Interns/${internid}`,
@@ -1097,34 +2007,30 @@ app.post("/api/register", upload.single("profileImage"), async (req, res) => {
             streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
         });
 
-        const picUrl = result.secure_url;
-        console.log('Cloudinary profile pic URL:', picUrl);
+        const picUrl = uploadResult.secure_url;
 
-        // Insert user data into DB with profile pic URL instead of local path
         const sql = `
-        INSERT INTO users (username, email, password_hash, full_name, phone, role, profile_image)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `;
+            INSERT INTO users (username, email, password_hash, full_name, phone, role, profile_image)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `;
 
-        db.query(sql, [username, email, hashed_pass, fullname, ph, department, picUrl], (err, result) => {
-            if (err) {
-                console.log(err);
-                return res.status(500).json({ error: "DB insert failed", details: err });
-            }
-            if (department == "Intern") {
-                const mysql = 'insert into Interns(intern_id,name,internrole,email,phone) values (?,?,?,?,?)';
-                db.query(mysql, [internid, fullname, internRole, email, ph], (err, result) => {
-                    if (err) {
-                        console.log(err)
-                        return res.status(500).json({ error: "DB insert failed", details: err });
-                    }
-                });
-            }
-            res.json({ ok: true, message: "Registration successful" });
-        });
+        // ✅ FIXED: using await
+        await executeQuery(sql, [username, email, hashed_pass, fullname, ph, department, picUrl]);
+
+        if (department === "Intern") {
+            const mysqlQuery = `
+                INSERT INTO Interns(intern_id, name, internrole, email, phone)
+                VALUES (?, ?, ?, ?, ?)
+            `;
+
+            await executeQuery(mysqlQuery, [internid, fullname, internRole, email, ph]);
+        }
+
+        res.json({ ok: true, message: "Registration successful" });
+
     } catch (err) {
         console.error(err);
-        res.status(500).json({ error: "Server error" });
+        res.status(500).json({ error: "Server error", details: err.message });
     }
 });
 
@@ -1526,6 +2432,20 @@ app.post('/api/checkout', (req, res) => {
             console.error('DB error:', err);
             return res.status(500).json({ message: 'DB error', error: err.message });
           }
+          //2change
+          // Emit real-time checkout update
+          io.to('hr-dashboard').emit('attendance-update', {
+            intern_id: intern_id,
+            action: 'checkout',
+            time: checkOutTime,
+            date: attendance_date
+          });
+          
+          io.to(`intern-${intern_id}`).emit('personal-attendance', {
+            action: 'checkout',
+            time: checkOutTime,
+            date: attendance_date
+          });
 
           res.json({ message: 'Checked out successfully', check_out: checkOutTime });
         }
@@ -1689,90 +2609,191 @@ app.put('/api/changetask/:taskId', (req, res) => {
 
         return res.json({ message: 'Task status updated successfully' });
     });
+}); // <--- Added missing closing bracket
+
+// Fetch weekly reports for reports.html dashboard
+app.get('/api/reports', async (req, res) => {
+    try {
+        // Get current week start date (Monday)
+        const today = new Date();
+        const currentWeekStart = new Date(today);
+        const dayOfWeek = today.getDay();
+        const diff = today.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+        currentWeekStart.setDate(diff);
+        const weekStartDate = currentWeekStart.toISOString().split('T')[0];
+
+        // Query to get weekly report status for all interns with their actual reports
+        const sql = `
+            SELECT 
+                i.intern_id,
+                i.name,
+                i.department,
+                COALESCE(wr.wednesday_status, 'Missing') as wed,
+                COALESCE(wr.saturday_status, 'Missing') as sat,
+                COALESCE(wr.last_submission_date, NULL) as lastSub,
+                wr.week_start_date,
+                (SELECT COUNT(*) FROM Reports r 
+                 WHERE r.intern_id = i.intern_id 
+                 AND DATE(r.submitted_at) >= ?) as total_reports,
+                -- Get Wednesday report file_path if submitted this week
+                (SELECT r.file_path FROM Reports r 
+                 WHERE r.intern_id = i.intern_id 
+                 AND DATE(r.submitted_at) >= ?
+                 AND DAYOFWEEK(r.submitted_at) = 4
+                 ORDER BY r.submitted_at DESC LIMIT 1) as wednesday_file_path,
+                -- Get Saturday report file_path if submitted this week
+                (SELECT r.file_path FROM Reports r 
+                 WHERE r.intern_id = i.intern_id 
+                 AND DATE(r.submitted_at) >= ?
+                 AND DAYOFWEEK(r.submitted_at) = 7
+                 ORDER BY r.submitted_at DESC LIMIT 1) as saturday_file_path,
+                -- Get Wednesday report ID if submitted this week
+                (SELECT r.id FROM Reports r 
+                 WHERE r.intern_id = i.intern_id 
+                 AND DATE(r.submitted_at) >= ?
+                 AND DAYOFWEEK(r.submitted_at) = 4
+                 ORDER BY r.submitted_at DESC LIMIT 1) as wednesday_report_id,
+                -- Get Saturday report ID if submitted this week
+                (SELECT r.id FROM Reports r 
+                 WHERE r.intern_id = i.intern_id 
+                 AND DATE(r.submitted_at) >= ?
+                 AND DAYOFWEEK(r.submitted_at) = 7
+                 ORDER BY r.submitted_at DESC LIMIT 1) as saturday_report_id
+            FROM Interns i
+            LEFT JOIN weekly_reports wr ON i.intern_id = wr.intern_id 
+                AND wr.week_start_date = ?
+            WHERE i.status = 'Active'
+            ORDER BY i.name
+        `;
+
+        db.query(sql, [weekStartDate, weekStartDate, weekStartDate, weekStartDate, weekStartDate, weekStartDate], (err, rows) => {
+            if (err) {
+                console.error('Error fetching weekly reports:', err);
+                return res.status(500).json({ error: 'Failed to fetch reports' });
+            }
+
+            // Transform data to match expected format
+            const reports = rows.map(row => ({
+                name: row.name,
+                dept: row.department,
+                wed: row.wed,
+                sat: row.sat,
+                lastSub: row.lastSub || '—',
+                total_reports: row.total_reports,
+                wednesday_file_path: row.wednesday_file_path,
+                saturday_file_path: row.saturday_file_path,
+                wednesday_report_id: row.wednesday_report_id,
+                saturday_report_id: row.saturday_report_id
+            }));
+
+            res.json(reports);
+        });
+    } catch (error) {
+        console.error('Error in reports endpoint:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
 });
-
-// GET /api/reports?intern_id=&project=&status=
-// Fetch reports for an intern with optional filters
-app.get('/api/reports', (req, res) => {
-    const { intern_id, project, status } = req.query;
-    if (!intern_id) return res.status(400).json({ error: 'intern_id is required' });
-
-    let sql = `
-      SELECT id, report_title, report_description, file_path, status, submitted_at, due_date 
-      FROM Reports 
-      WHERE intern_id = ?
-    `;
-    const params = [intern_id];
-
-    if (status) {
-      sql += ` AND status = ?`;
-      params.push(status);
-    }
-
-    if (project) {
-      sql += ` AND report_description LIKE ?`;
-      params.push(`%${project}%`);
-    }
-
-    sql += ' ORDER BY submitted_at DESC';
-
-    db.query(sql, params, (err, rows) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Failed to fetch reports' });
-      }
-      const reports = rows.map(r => ({
-        id: r.id,
-        title: r.report_title,
-        description: r.report_description,
-        file: r.file_path,
-        status: r.status,
-        submittedAt: r.submitted_at ? new Date(r.submitted_at).toISOString().slice(0, 10) : null,
-        dueDate: r.due_date ? new Date(r.due_date).toISOString().slice(0, 10) : null,
-      }));
-      res.json(reports);
-    });
-  });
   
   // POST /api/reports/upload
   // Upload a new report file
 app.post('/api/reports/upload', async (req, res) => {
   try {
     const { intern_id, report_title, report_description, due_date, file_path } = req.body;
+
     console.log(req.body);
-    // Validate required fields
-    if (!intern_id || !report_title)
-      return res.status(400).json({ error: 'intern_id required' });
-    if (!report_title)
-      return res.status(400).json({ error: 'report_title is required' });
-    if (!report_description)
-      return res.status(400).json({ error: 'report_description is required' });
-    if (!due_date)
-      return res.status(400).json({ error: 'due_date is required' });
-    if (!file_path)
-      return res.status(400).json({ error: 'file_path is required' });
-    
 
-    if (!file_path)
-      return res.status(400).json({ error: 'file_path is required' });
+    // ✅ Clean validation
+    if (!intern_id) return res.status(400).json({ error: 'intern_id is required' });
+    if (!report_title) return res.status(400).json({ error: 'report_title is required' });
+    if (!report_description) return res.status(400).json({ error: 'report_description is required' });
+    if (!due_date) return res.status(400).json({ error: 'due_date is required' });
+    if (!file_path) return res.status(400).json({ error: 'file_path is required' });
 
+    // ================= INSERT REPORT =================
     const sql = `
-      INSERT INTO Reports (intern_id, report_title, report_description, file_path, status, due_date, submitted_at)
+      INSERT INTO Reports 
+      (intern_id, report_title, report_description, file_path, status, due_date, submitted_at)
       VALUES (?, ?, ?, ?, 'Pending', ?, NOW())
     `;
 
-    await db.query(sql, [
+    const insertResult = await db.query(sql, [
       intern_id,
       report_title,
       report_description || null,
       file_path,
       due_date || null,
     ]);
+    const reportId = insertResult.insertId;
 
+    // ================= DATE LOGIC =================
+    const submissionDate = new Date();
+    const dayOfWeek = submissionDate.getDay(); // 0 = Sunday, 3 = Wednesday, 6 = Saturday
+    const weekStart = new Date(submissionDate);
+    const diff = submissionDate.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+    weekStart.setDate(diff);
+    const weekStartDate = weekStart.toISOString().split('T')[0];
+
+    // ================= STATUS LOGIC =================
+    let updateField = '';
+    if (dayOfWeek === 3) { // Wednesday
+      updateField = 'wednesday_status';
+    } else if (dayOfWeek === 6) { // Saturday
+      updateField = 'saturday_status';
+    } else {
+      // For other days, update both statuses to Submitted since report was uploaded
+      updateField = 'both';
+    }
+
+    // Update weekly_reports table with report ID
+    let weeklyReportsSql;
+    let weeklyReportsParams;
+
+    if (updateField === 'both') {
+      // Update both Wednesday and Saturday status for non-report days
+      weeklyReportsSql = `
+        INSERT INTO weekly_reports (intern_id, week_start_date, wednesday_status, saturday_status, wednesday_report_id, saturday_report_id, last_submission_date)
+        VALUES (?, ?, 'Submitted', 'Submitted', ?, ?, ?)
+        ON DUPLICATE KEY UPDATE 
+        wednesday_status = 'Submitted',
+        saturday_status = 'Submitted',
+        wednesday_report_id = VALUES(wednesday_report_id),
+        saturday_report_id = VALUES(saturday_report_id),
+        last_submission_date = VALUES(last_submission_date)
+      `;
+      weeklyReportsParams = [
+        intern_id,
+        weekStartDate,
+        reportId,
+        reportId,
+        submissionDate.toISOString().split('T')[0]
+      ];
+    } else {
+      // Update specific day status
+      const reportIdField = updateField === 'wednesday_status' ? 'wednesday_report_id' : 'saturday_report_id';
+      weeklyReportsSql = `
+        INSERT INTO weekly_reports (intern_id, week_start_date, ${updateField}, ${reportIdField}, last_submission_date)
+        VALUES (?, ?, 'Submitted', ?, ?)
+        ON DUPLICATE KEY UPDATE 
+        ${updateField} = 'Submitted',
+        ${reportIdField} = VALUES(${reportIdField}),
+        last_submission_date = VALUES(last_submission_date)
+      `;
+      weeklyReportsParams = [
+        intern_id,
+        weekStartDate,
+        reportId,
+        submissionDate.toISOString().split('T')[0]
+      ];
+    }
+
+    await db.query(weeklyReportsSql, weeklyReportsParams);
+
+    // ================= RESPONSE =================
     res.json({
       message: 'Report uploaded successfully',
-      fileUrl: file_path, // ✅ send correct key
+      fileUrl: file_path
     });
+
   } catch (err) {
     console.error('Upload error:', err);
     res.status(500).json({ error: 'Failed to upload report' });
@@ -1791,6 +2812,24 @@ app.get('/api/reports/download/:id', (req, res) => {
       if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
       res.download(fullPath, report_title);
     });
+  });
+
+  // GET /api/reports/download-file
+  // Download a report file by file path
+app.get('/api/reports/download-file', (req, res) => {
+    const filePath = req.query.path;
+    if (!filePath) {
+      return res.status(400).json({ error: 'File path is required' });
+    }
+    
+    const fullPath = path.join(__dirname, filePath);
+    if (!fs.existsSync(fullPath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    
+    // Get filename from path
+    const fileName = filePath.split('/').pop() || 'report';
+    res.download(fullPath, fileName);
   });
   
   // PUT /api/reports/:id/status
@@ -2004,17 +3043,40 @@ function getCurrentISTDate() {
 
 
 //api to get the id and role
-app.get("/api/profile", authenticateToken, (req, res) => {
-    db.query("SELECT id, role,username,full_name,profile_image FROM users WHERE id = ?", [req.user.id], (err, results) => {
-        if (err) return res.status(500).json({ message: "DB error" });
-        if (results.length === 0) return res.status(404).json({ message: "User not found" });
-
-        if (results[0].role == "Intern") {
-            results[0].intern_id = req.user.intern_id;
-        }
-        console.log(results[0]);
-        res.json(results[0]);
-    });
+app.get("/api/profile", authenticateToken, async (req, res) => {
+  //console.log('🔍 Profile endpoint called!');
+  //console.log('🔍 User from token:', req.user);
+ // console.log('🔍 User intern_id:', req);
+  try {
+    const query = `
+      SELECT id, internrole as role, name, email, profile_image, department, status 
+      FROM Interns 
+      WHERE intern_id = ?
+    `;
+    
+    //console.log('🔍 Querying for intern_id:', req.user?.intern_id);
+    const [results] = await executeQuery(query, [req.user.intern_id]);
+    
+    //console.log('🔍 Query results:', results);
+    
+    if (results.length === 0) {
+      console.log('🔍 No user found');
+      return res.status(404).json({ message: "User not found" });
+    }
+    
+    const user = results[0];
+    
+    // Add intern_id if role is Intern
+    if (user.role && user.role.toLowerCase() === "intern") {
+      user.intern_id = req.user.intern_id;
+    }
+    
+    //console.log('🔍 Returning user data:', user);
+    res.json(user);
+  } catch (error) {
+    console.error('❌ Error in profile endpoint:', error);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 //api to get the id and role
@@ -2422,6 +3484,57 @@ app.post('/api/leave-requests', async (req, res) => {
       res.status(500).json({ error: 'Internal Server Error', message: error.message });
     }
   });
+  
+  // Update leave request status (approve/reject)
+  app.put('/api/leave-requests/:id/status', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+      
+      if (!['Approved', 'Rejected'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid status. Must be Approved or Rejected' });
+      }
+  
+      const result = await new Promise((resolve, reject) => {
+        db.query(
+          `UPDATE leave_requests SET status = ? WHERE id = ?`,
+          [status, id],
+          (err, results) => {
+            if (err) reject(err);
+            else resolve(results);
+          }
+        );
+      });
+  
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: 'Leave request not found' });
+      }
+  
+      res.json({ message: `Leave request ${status.toLowerCase()} successfully` });
+    } catch (error) {
+      console.error('Error updating leave request:', error);
+      res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    }
+  });
+  
+  // ------------------- GET submitted documents (uploaded by intern) -------------------
+  app.get('/api/documents/submitted', (req, res) => {
+    const internId = req.query.intern_id;
+    if (!internId) return res.status(400).json({ error: 'intern_id is required' });
+  
+    const sql = `SELECT id, doc_title, upload_date, status, file_path
+                 FROM Documents
+                 WHERE intern_id = ? AND uploaded_by = 'Intern'
+                 ORDER BY upload_date DESC`;
+  
+    db.query(sql, [internId], (err, rows) => {
+      if (err) {
+        console.error('Failed to fetch submitted documents:', err);
+        return res.status(500).json({ error: 'Failed to fetch submitted documents' });
+      }
+      res.json(rows);
+    });
+  });
   app.get('/api/documents', (req, res) => {
     const internId = req.query.intern_id;
     if (!internId) return res.status(400).json({ error: 'intern_id query parameter is required' });
@@ -2458,26 +3571,61 @@ app.post('/api/leave-requests', async (req, res) => {
       res.json(documents);
     });
   });
+
+
   
-  // ------------------- GET submitted documents (uploaded by intern) -------------------
-  app.get('/api/documents/submitted', (req, res) => {
-    const internId = req.query.intern_id;
-    if (!internId) return res.status(400).json({ error: 'intern_id is required' });
-  
-    const sql = `SELECT id, doc_title, upload_date, status, file_path
-                 FROM Documents
-                 WHERE intern_id = ? AND uploaded_by = 'Intern'
-                 ORDER BY upload_date DESC`;
-  
-    db.query(sql, [internId], (err, rows) => {
+  // ------------------- GET ALL DOCUMENTS (for documents.html page) -------------------
+  app.get('/api/documents/all', (req, res) => {
+    const sql = `
+      SELECT d.id, d.intern_id, d.doc_title, d.doc_description, d.file_path, 
+             d.file_size, d.category, d.uploaded_by, d.status, d.upload_date,
+             i.name as intern_name, i.department as intern_department
+      FROM Documents d
+      LEFT JOIN Interns i ON d.intern_id = i.intern_id
+      ORDER BY d.upload_date DESC
+    `;
+    
+    db.query(sql, (err, rows) => {
       if (err) {
-        console.error('Failed to fetch submitted documents:', err);
-        return res.status(500).json({ error: 'Failed to fetch submitted documents' });
+        console.error('Error fetching all documents:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
       }
-      res.json(rows);
+      
+      const documents = rows.map(doc => ({
+        id: doc.id,
+        name: doc.intern_name || 'Unknown',
+        type: doc.uploaded_by === 'Intern' ? 'Intern' : 'Employee',
+        category: doc.category,
+        uploadedOn: doc.upload_date ? doc.upload_date.toString().slice(0, 10) : null,
+        status: doc.status,
+        filePath: doc.file_path
+      }));
+      
+      // Calculate statistics
+      const stats = {
+        total: documents.length,
+        employee: documents.filter(d => d.type === 'Employee').length,
+        intern: documents.filter(d => d.type === 'Intern').length,
+        pending: documents.filter(d => d.status === 'Pending').length
+      };
+      
+      // Get pending documents (missing files)
+      const pendingDocs = documents
+        .filter(d => d.status === 'Pending' || d.status === 'Missing')
+        .map(d => ({
+          name: d.name,
+          required: d.category,
+          type: d.type
+        }));
+      
+      res.json({
+        documents,
+        pendingDocs,
+        stats
+      });
     });
   });
-  
+
   // ------------------- GET issued documents (uploaded by others) -------------------
   app.get('/api/documents/issued', (req, res) => {
     const internId = req.query.intern_id;
@@ -2536,6 +3684,36 @@ app.post('/api/documents/upload', async (req, res) => {
 });
 
   
+  
+  // ------------------- UPDATE DOCUMENT STATUS -------------------
+  app.put('/api/documents/:id/status', (req, res) => {
+    const docId = req.params.id;
+    const { status } = req.body;
+    
+    if (!status || !['Reviewed', 'Rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Must be Reviewed or Rejected' });
+    }
+    
+    const sql = `UPDATE Documents SET status = ?, updated_at = NOW() WHERE id = ?`;
+    
+    db.query(sql, [status, docId], (err, result) => {
+      if (err) {
+        console.error('Error updating document status:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: 'Document not found' });
+      }
+      
+      res.json({ 
+        message: `Document status updated to ${status} successfully`,
+        docId,
+        newStatus: status
+      });
+    });
+  });
+
   
   // ------------------- DOWNLOAD document by ID -------------------
   app.get('/api/documents/download/:id', (req, res) => {
@@ -3349,4 +4527,9 @@ app.put('/api/settings', (req, res) => {
             });
         }
     });
+});
+
+// Start the server
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
 });
