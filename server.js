@@ -3051,6 +3051,7 @@ app.get("/api/profile", authenticateToken, async (req, res) => {
   //console.log('🔍 User from token:', req.user);
  // console.log('🔍 User intern_id:', req);
   try {
+      console.log(req.user)
     const query = `
       SELECT id, internrole as role, name, email, profile_image, department, status 
       FROM users 
