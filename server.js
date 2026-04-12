@@ -1940,7 +1940,7 @@ app.post("/api/login", async (req, res) => {
                 intern_id: internId 
             });
 
-            return res.json({ token });
+            return res.json({ token:token ,role:user.role});
         }
 
         // For non-intern users
