@@ -3071,7 +3071,7 @@ app.get("/api/profile", authenticateToken, async (req, res) => {
       user.intern_id = req.user.intern_id;
     }
     
-    //console.log('🔍 Returning user data:', user);
+    console.log('🔍 Returning user data:', user);
     res.json(user);
   } catch (error) {
     console.error('❌ Error in profile endpoint:', error);
