@@ -3053,7 +3053,7 @@ app.get("/api/profile", authenticateToken, async (req, res) => {
   try {
     const query = `
       SELECT id, internrole as role, name, email, profile_image, department, status 
-      FROM Interns 
+      FROM users 
       WHERE intern_id = ?
     `;
     
