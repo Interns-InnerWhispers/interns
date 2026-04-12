@@ -429,16 +429,21 @@ function executeQuery(sql, params = []) {
 
 app.get('/health', async (req, res) => {
     try {
-        await dbp().query('SELECT 1');
-        res.send('✅ Healthy');
+        const [result] = await executeQuery('SELECT 1');
+        if (result[0]['1'] === 1) {
+            res.send('');
+        } else {
+            res.status(500).send('');
+        }
     } catch {
-        res.status(500).send('❌ DB Down');
+        res.status(500).send('');
     }
 });
 
 // Upload example
 app.post('/upload', upload.single('file'), (req, res) => {
     res.json({
+        message: '',
         message: '✅ File uploaded successfully',
         file: req.file
     });
@@ -447,7 +452,7 @@ app.post('/upload', upload.single('file'), (req, res) => {
 // Example DB query
 app.get('/users', async (req, res) => {
     try {
-        const [rows] = await db.query("SELECT * FROM users");
+        const [rows] = await executeQuery("SELECT * FROM users");
         res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -455,7 +460,7 @@ app.get('/users', async (req, res) => {
 });
 
 /* ------------------------------
-   ⚠️ Error Handling
+   Error Handling
 ------------------------------- */
 app.use((err, req, res, next) => {
     console.error(err.stack);
@@ -1194,7 +1199,7 @@ UpdateDocumentsTable();
     // Helper function to create notifications
     async function createNotification(notify, description, type = 'info', targetUserId = null, targetRole = 'all') {
         try {
-            const [result] = await db.query(
+            const [result] = await executeQuery(
                 'INSERT INTO Notifications (notify, description, type, target_user_id, target_role) VALUES (?, ?, ?, ?, ?)',
                 [notify, description, type, targetUserId, targetRole]
             );
@@ -2716,7 +2721,7 @@ app.post('/api/reports/upload', async (req, res) => {
       VALUES (?, ?, ?, ?, 'Pending', ?, NOW())
     `;
 
-    const insertResult = await db.query(sql, [
+    const insertResult = await executeQuery(sql, [
       intern_id,
       report_title,
       report_description || null,
@@ -2786,7 +2791,7 @@ app.post('/api/reports/upload', async (req, res) => {
       ];
     }
 
-    await db.query(weeklyReportsSql, weeklyReportsParams);
+    await executeQuery(weeklyReportsSql, weeklyReportsParams);
 
     // ================= RESPONSE =================
     res.json({
@@ -2843,7 +2848,7 @@ app.get('/api/reports/download-file', (req, res) => {
       }
   
       const sql = `UPDATE Reports SET status = ?, reviewed_at = NOW() WHERE id = ?`;
-  const [result] = await dbp().query(sql, [status, id]);
+      const [result] = await executeQuery(sql, [status, id]);
   
       if (result.affectedRows === 0) return res.status(404).json({ error: 'Report not found' });
   
@@ -2857,45 +2862,43 @@ app.get('/api/reports/download-file', (req, res) => {
 
 
 // Update the dashboard stats endpoint
-app.get('/api/dashboard-stats', (req, res) => {
-    const todayIST = getTodayIST();
-    const query = `
-        SELECT 
-            COUNT(*) as total_appointments,
-            SUM(CASE WHEN DATE(appointment_date) = ? AND status = 'confirmed' THEN 1 ELSE 0 END) as appointments_today,
-            SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_confirmations,
-            SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_appointments
-        FROM appointments
-    `;
-    db.query(query, [todayIST], (err, results) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
-        }
+app.get('/api/dashboard-stats', async (req, res) => {
+    try {
+        const todayIST = getTodayIST();
+        const query = `
+            SELECT 
+                COUNT(*) as total_appointments,
+                SUM(CASE WHEN DATE(appointment_date) = ? AND status = 'confirmed' THEN 1 ELSE 0 END) as appointments_today,
+                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_confirmations,
+                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_appointments
+            FROM appointments
+        `;
+        const [results] = await executeQuery(query, [todayIST]);
         res.json(results[0]);
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.post('/api/submitreport', (req, res) => {
-  const { intern_id, report_title, report_description, file_path } = req.body;
+app.post('/api/submitreport', async (req, res) => {
+  try {
+    const { intern_id, report_title, report_description, file_path } = req.body;
 
-  if (!intern_id || !report_title || !file_path) {
-    return res.status(400).json({ message: 'Missing required fields' });
-  }
-
-  const query = `
-    INSERT INTO Reports (intern_id, report_title, report_description, file_path)
-    VALUES (?, ?, ?, ?)
-  `;
-
-  db.query(query, [intern_id, report_title, report_description, file_path], (err, result) => {
-    if (err) {
-      console.error("DB Insert Error:", err);
-      return res.status(500).json({ message: 'Database error', error: err });
+    if (!intern_id || !report_title || !file_path) {
+      return res.status(400).json({ message: 'Missing required fields' });
     }
 
+    const query = `
+      INSERT INTO Reports (intern_id, report_title, report_description, file_path)
+      VALUES (?, ?, ?, ?)
+    `;
+
+    const [result] = await executeQuery(query, [intern_id, report_title, report_description, file_path]);
     res.json({ message: 'Report submitted successfully', reportId: result.insertId });
-  });
+  } catch (err) {
+    console.error("DB Insert Error:", err);
+    res.status(500).json({ message: 'Database error', error: err });
+  }
 });
 
 
