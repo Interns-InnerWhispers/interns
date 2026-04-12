@@ -3044,35 +3044,21 @@ function getCurrentISTDate() {
 
 //api to get the id and role
 app.get("/api/profile", authenticateToken, async (req, res) => {
-  //console.log('🔍 Profile endpoint called!');
-  //console.log('🔍 User from token:', req.user);
- // console.log('🔍 User intern_id:', req);
   try {
     const query = `
-      SELECT id, internrole as role, name, email, profile_image, department, status 
+      SELECT id, intern_id, internrole as role, name, email, profile_image, department, status 
       FROM Interns 
       WHERE intern_id = ?
     `;
-    console.log("/profile",req)
-    //console.log('🔍 Querying for intern_id:', req.user?.intern_id);
+
     const [results] = await executeQuery(query, [req.user.intern_id]);
-    
-    //console.log('🔍 Query results:', results);
-    
+
     if (results.length === 0) {
-      console.log('🔍 No user found');
       return res.status(404).json({ message: "User not found" });
     }
-    
-    const user = results[0];
-    
-    // Add intern_id if role is Intern
-    if (user.role && user.role.toLowerCase() === "intern") {
-      user.intern_id = req.user.intern_id;
-    }
-    
-    console.log('🔍 Returning user data:', user);
-    res.json(user);
+
+    res.json(results[0]);
+
   } catch (error) {
     console.error('❌ Error in profile endpoint:', error);
     res.status(500).json({ message: "Server error" });
