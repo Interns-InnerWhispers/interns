@@ -1394,10 +1394,12 @@ app.get('/api/interns-count', async (req, res) => {
 app.get('/api/interns', authenticateToken, async (req, res) => {
     try {
         const [interns] = await executeQuery(`
-            SELECT 
-               *
-            FROM Interns 
-            ORDER BY created_at DESC
+           SELECT 
+                i.*,
+                u.profile_image
+            FROM Interns i
+            LEFT JOIN users u ON i.email = u.email
+            ORDER BY i.created_at DESC
         `);
         
         // Transform data to match frontend expectations
