@@ -3053,7 +3053,7 @@ app.get("/api/profile", authenticateToken, async (req, res) => {
       FROM Interns 
       WHERE intern_id = ?
     `;
-    
+    console.log("/profile",req)
     //console.log('🔍 Querying for intern_id:', req.user?.intern_id);
     const [results] = await executeQuery(query, [req.user.intern_id]);
     
