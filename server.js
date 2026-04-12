@@ -963,11 +963,11 @@ app.post("/api/login", async (req, res) => {
             }
 
             // 🚨 BEFORE 6:30 PM
-            if (currentMinutes < startTime) {
-                return res.status(200).json({
-                    message: "You are too early. Please login after 18:30:00"
-                });
-            }
+          //  if (currentMinutes < startTime) {
+            //    return res.status(200).json({
+              //      message: "You are too early. Please login after 18:30:00"
+                //});
+         //   }
 
             // ✅ 6:30 - 6:35 (ON TIME)
             if (currentMinutes >= startTime && currentMinutes < lateTime) {
