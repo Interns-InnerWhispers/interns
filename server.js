@@ -3054,7 +3054,7 @@ app.get("/api/profile", authenticateToken, async (req, res) => {
       console.log(req.user)
     const query = `
       SELECT id, internrole as role, name, email, profile_image, department, status 
-      FROM users 
+      FROM interns 
       WHERE intern_id = ?
     `;
     
