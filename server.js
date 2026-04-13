@@ -2023,52 +2023,105 @@ app.post('/api/forgotpass', (req, res) => {
 //for register
 app.post("/api/register", upload.single("profileImage"), async (req, res) => {
     try {
-        const { username, email, password, fullname, ph, department, internRole, internid } = req.body;
-        
-        const hashed_pass = bcrypt.hashSync(password, 10);
+        const {
+            username,
+            email,
+            password,
+            fullname,
+            ph,
+            role,          // ✅ use role instead of department
+            internRole,    // only for interns
+            internid       // only for interns
+        } = req.body;
 
-        if (!req.file) {
-            return res.status(400).json({ error: "Profile image is required" });
+        // ✅ Validate required fields
+        if (!username || !email || !password || !fullname || !role) {
+            return res.status(400).json({ error: "Missing required fields" });
         }
 
-        // Upload to Cloudinary
-        const uploadResult = await new Promise((resolve, reject) => {
-            const uploadStream = cloudinary.uploader.upload_stream(
-                {
-                    folder: `Interns/${internid}`,
-                    public_id: 'profile_pic',
-                    resource_type: 'image',
-                    overwrite: true
-                },
-                (error, result) => (error ? reject(error) : resolve(result))
-            );
-            streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
-        });
+        // ✅ Hash password
+        const hashed_pass = bcrypt.hashSync(password, 10);
 
-        const picUrl = uploadResult.secure_url;
+        // ✅ Handle profile image (optional for non-interns)
+        let picUrl = null;
 
-        const sql = `
+        if (req.file) {
+            const uploadResult = await new Promise((resolve, reject) => {
+                const uploadStream = cloudinary.uploader.upload_stream(
+                    {
+                        folder: `Users/${role}`,
+                        public_id: `${username}_profile`,
+                        resource_type: 'image',
+                        overwrite: true
+                    },
+                    (error, result) => (error ? reject(error) : resolve(result))
+                );
+
+                streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
+            });
+
+            picUrl = uploadResult.secure_url;
+        }
+
+        // ✅ Insert into USERS table
+        const userSql = `
             INSERT INTO users (username, email, password_hash, full_name, phone, role, profile_image)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         `;
 
-        // ✅ FIXED: using await
-        await executeQuery(sql, [username, email, hashed_pass, fullname, ph, department, picUrl]);
+        await executeQuery(userSql, [
+            username,
+            email,
+            hashed_pass,
+            fullname,
+            ph || null,
+            role,       // ✅ correct role
+            picUrl
+        ]);
 
-        if (department === "Intern") {
-            const mysqlQuery = `
-                INSERT INTO Interns(intern_id, name, internrole, email, phone)
+        // ============================
+        // 🔵 INTERN-SPECIFIC LOGIC
+        // ============================
+        if (role.toLowerCase() === "intern") {
+
+            if (!internid || !internRole) {
+                return res.status(400).json({
+                    error: "Intern ID and Intern Role required"
+                });
+            }
+
+            const internSql = `
+                INSERT INTO Interns (intern_id, name, internrole, email, phone)
                 VALUES (?, ?, ?, ?, ?)
             `;
 
-            await executeQuery(mysqlQuery, [internid, fullname, internRole, email, ph]);
+            await executeQuery(internSql, [
+                internid,
+                fullname,
+                internRole,
+                email,
+                ph || null
+            ]);
         }
 
-        res.json({ ok: true, message: "Registration successful" });
+        // ============================
+        // 🟢 OTHER ROLES (OPTIONAL)
+        // ============================
+        // Example: Doctor table, Patient table etc.
+        // You can extend here later
+
+        res.json({
+            ok: true,
+            message: "Registration successful",
+            role
+        });
 
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "Server error", details: err.message });
+        console.error("❌ Register error:", err);
+        res.status(500).json({
+            error: "Server error",
+            details: err.message
+        });
     }
 });
 
