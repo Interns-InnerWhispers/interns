@@ -1865,7 +1865,9 @@ app.post("/api/login", async (req, res) => {
         const { email, password } = req.body;
         console.log("🔐 Login attempt:", email);
 
-        // ✅ Get user
+        // ============================
+        // ✅ GET USER
+        // ============================
         const [[user]] = await executeQuery(
             "SELECT * FROM users WHERE email = ?",
             [email]
@@ -1875,13 +1877,14 @@ app.post("/api/login", async (req, res) => {
             return res.status(401).json({ message: "Invalid email" });
         }
 
-        // ✅ Check password exists
         if (!user.password_hash) {
             console.error("❌ No password_hash for user:", user);
             return res.status(401).json({ message: "Invalid credentials" });
         }
 
-        // ✅ Compare password
+        // ============================
+        // ✅ PASSWORD CHECK
+        // ============================
         const match = await bcrypt.compare(password, user.password_hash);
 
         if (!match) {
@@ -1908,13 +1911,36 @@ app.post("/api/login", async (req, res) => {
             const internId = intern.intern_id;
             console.log("👤 Intern ID:", internId);
 
-            // ✅ IST time
+            // ============================
+            // ⏰ TIME + DATE (IST)
+            // ============================
             const now = new Date();
             const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+
             const date = istNow.toISOString().slice(0, 10);
             const time = istNow.toTimeString().slice(0, 8);
 
-            // ✅ Check attendance
+            // Convert time → minutes
+            const currentTime = istNow.getHours() * 60 + istNow.getMinutes();
+
+            // 🎯 TIME RULES
+            const startTime = 18 * 60 + 28; // 6:28 PM
+            const endTime = 18 * 60 + 40;   // 6:40 PM
+
+            let status = "Present";
+
+            if (currentTime > endTime) {
+                status = "Late";
+            }
+
+            // (Optional future rule)
+             if (currentTime > 19 * 60) {
+                 status = "Absent";
+            }
+
+            // ============================
+            // ✅ CHECK EXISTING ATTENDANCE
+            // ============================
             const [[existing]] = await executeQuery(
                 `SELECT id FROM Attendance WHERE intern_id = ? AND attendance_date = ?`,
                 [internId, date]
@@ -1922,32 +1948,37 @@ app.post("/api/login", async (req, res) => {
 
             if (!existing) {
                 await executeQuery(
-                    `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
-                     VALUES (?, ?, 'Present', ?)`,
-                    [internId, date, time]
+                    `INSERT INTO Attendance 
+                    (intern_id, attendance_date, status, check_in)
+                    VALUES (?, ?, ?, ?)`,
+                    [internId, date, status, time]
                 );
 
-                console.log("✅ Attendance inserted");
+                console.log(`✅ Attendance inserted as ${status}`);
 
-                // 🔔 Optional realtime events
+                // 🔔 Realtime updates
                 io?.to('hr-dashboard')?.emit('attendance-update', {
                     intern_id: internId,
                     action: 'check-in',
                     time,
-                    date
+                    date,
+                    status
                 });
 
                 io?.to(`intern-${internId}`)?.emit('personal-attendance', {
                     action: 'check-in',
                     time,
-                    date
+                    date,
+                    status
                 });
 
             } else {
                 console.log("⚠️ Attendance already exists for today");
             }
 
-            // ✅ Create token
+            // ============================
+            // ✅ TOKEN
+            // ============================
             const token = encodeToken({
                 id: user.id,
                 name: user.full_name,
