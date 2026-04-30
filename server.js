@@ -3151,21 +3151,29 @@ function getCurrentISTDate() {
 
 //api to get the id and role
 app.get("/api/profile", authenticateToken, async (req, res) => {
-  //console.log('🔍 Profile endpoint called!');
-  //console.log('🔍 User from token:', req.user);
- // console.log('🔍 User intern_id:', req);
+  console.log('🔍 Profile endpoint called!');
+  console.log('🔍 User from token:', req.user);
+  console.log('🔍 User ID:', req.user?.id);
+  console.log('🔍 User role:', req.user?.role);
+  
   try {
+    // Query by user ID from the token
+    if (!req.user?.id) {
+      console.log('🔍 No user ID found in token');
+      return res.status(400).json({ message: "Invalid token: missing user ID" });
+    }
+    
     const query = `
       SELECT u.id, u.role, u.full_name as name, u.email, u.profile_image, i.department, i.status 
       FROM users u
       LEFT JOIN Interns i ON u.email = i.email
-      WHERE u.email = ?
+      WHERE u.id = ?
     `;
     
-    //console.log('🔍 Querying for intern_id:', req.user?.intern_id);
-    const [results] = await executeQuery(query, [req.user.email]);
+    console.log('🔍 Querying by user ID:', req.user.id);
+    const [results] = await executeQuery(query, [req.user.id]);
     
-    //console.log('🔍 Query results:', results);
+    console.log('🔍 Query results:', results);
     
     if (results.length === 0) {
       console.log('🔍 No user found');
@@ -3174,12 +3182,16 @@ app.get("/api/profile", authenticateToken, async (req, res) => {
     
     const user = results[0];
     
-    // Add intern_id if role is Intern
-    if (user.role && user.role.toLowerCase() === "intern") {
-      user.intern_id = req.user.intern_id;
+    // Add intern_id if we can find it from Interns table
+    if (user.email) {
+      const internQuery = `SELECT intern_id FROM Interns WHERE email = ?`;
+      const [internResults] = await executeQuery(internQuery, [user.email]);
+      if (internResults.length > 0) {
+        user.intern_id = internResults[0].intern_id;
+      }
     }
     
-    //console.log('🔍 Returning user data:', user);
+    console.log('🔍 Returning user data:', user);
     res.json(user);
   } catch (error) {
     console.error('❌ Error in profile endpoint:', error);
