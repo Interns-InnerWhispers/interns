@@ -924,6 +924,23 @@ UpdateReportsTable();
             const diff = currentWeekStart.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
             currentWeekStart.setDate(diff);
             const weekStartDate = currentWeekStart.toISOString().split('T')[0];
+            const sql = `
+      ALTER TABLE weekly_reports 
+      ADD COLUMN wednesday_report_id INT NULL,
+      ADD COLUMN saturday_report_id INT NULL,
+      ADD CONSTRAINT fk_wednesday_report 
+        FOREIGN KEY (wednesday_report_id) REFERENCES Reports(id) ON DELETE SET NULL,
+      ADD CONSTRAINT fk_saturday_report 
+        FOREIGN KEY (saturday_report_id) REFERENCES Reports(id) ON DELETE SET NULL;
+    `;
+
+  db.query(sql , (err, result) => {
+                if (err) {
+                    console.error('Error adding columns to weekly reports table:', err);
+                } else {
+                    console.log('✅ Columns and foreign keys added successfully');
+                }
+            });
 
             // Query to insert all existing interns into weekly_reports table
             const populateWeeklyReports = `
@@ -1394,12 +1411,10 @@ app.get('/api/interns-count', async (req, res) => {
 app.get('/api/interns', authenticateToken, async (req, res) => {
     try {
         const [interns] = await executeQuery(`
-           SELECT 
-                i.*,
-                u.profile_image
-            FROM Interns i
-            LEFT JOIN users u ON i.email = u.email
-            ORDER BY i.created_at DESC
+            SELECT 
+               *
+            FROM Interns 
+            ORDER BY created_at DESC
         `);
         
         // Transform data to match frontend expectations
@@ -1863,157 +1878,95 @@ app.get('/api/notifications/unread-count', authenticateToken, async (req, res) =
 app.post("/api/login", async (req, res) => {
     try {
         const { email, password } = req.body;
-        console.log("🔐 Login attempt:", email);
-
-        // ============================
-        // ✅ GET USER
-        // ============================
-        const [[user]] = await executeQuery(
-            "SELECT * FROM users WHERE email = ?",
-            [email]
-        );
-
-        if (!user) {
+        console.log(email," ", password)
+        const [users] = await executeQuery("SELECT * FROM users WHERE email = ?", [email]);
+        
+        if (users.length === 0) {
             return res.status(401).json({ message: "Invalid email" });
         }
 
+        const user = users[0];
+        
+        // Check if password_hash exists
         if (!user.password_hash) {
-            console.error("❌ No password_hash for user:", user);
+            console.error('User found but no password_hash:', user);
             return res.status(401).json({ message: "Invalid credentials" });
         }
-
-        // ============================
-        // ✅ PASSWORD CHECK
-        // ============================
+        
         const match = await bcrypt.compare(password, user.password_hash);
-
+        
         if (!match) {
             return res.status(401).json({ message: "Invalid password" });
         }
-
-        console.log("✅ User role:", user.role);
-
-        // ============================
-        // 🔵 INTERN LOGIN LOGIC
-        // ============================
+        console.log("user role",user.role)
+        // If Intern — handle attendance
         if (user.role.toLowerCase() === "intern") {
-
-            // ✅ Get intern details
-            const [[intern]] = await executeQuery(
-                "SELECT intern_id, name FROM Interns WHERE email = ?",
+            const internResults = await executeQuery(
+                "SELECT intern_id, name FROM Interns WHERE email = ?", 
                 [email]
-            );
+            ); 
 
-            if (!intern) {
+            if (internResults.length === 0) {
                 return res.status(401).json({ message: "Intern not found" });
             }
 
-            const internId = intern.intern_id;
-            console.log("👤 Intern ID:", internId);
+            const internId = internResults[0][0].intern_id;
+            console.log(internResults)
+            console.log(internId)
 
-            // ============================
-            // ⏰ TIME + DATE (IST)
-            // ============================
+            // Get current IST date & time
             const now = new Date();
-            const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+            const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)); // Convert UTC → IST
+            const date = istNow.toISOString().slice(0, 10); // YYYY-MM-DD
+            const time = istNow.toTimeString().slice(0, 8); // HH:MM:SS
 
-            const date = istNow.toISOString().slice(0, 10);
-            const time = istNow.toTimeString().slice(0, 8);
-
-            // Convert time → minutes
-            const currentTime = istNow.getHours() * 60 + istNow.getMinutes();
-
-            // 🎯 TIME RULES
-            const startTime = 18 * 60 + 28; // 6:28 PM
-            const endTime = 18 * 60 + 40;   // 6:40 PM
-
-            let status = "Present";
-
-            if (currentTime > endTime) {
-                status = "Late";
-            }
-
-            // (Optional future rule)
-             if (currentTime > 19 * 60) {
-                 status = "Absent";
-            }
-
-            // ============================
-            // ✅ CHECK EXISTING ATTENDANCE
-            // ============================
-            const [[existing]] = await executeQuery(
-                `SELECT id FROM Attendance WHERE intern_id = ? AND attendance_date = ?`,
+            // ✅ Check if attendance already exists for today
+            const existingAttendance = await executeQuery(
+                `SELECT * FROM Attendance WHERE intern_id = ? AND attendance_date = ?`,
                 [internId, date]
             );
 
-            if (!existing) {
+            if (existingAttendance.length === 0) {
+                // Insert only if not present already
                 await executeQuery(
-                    `INSERT INTO Attendance 
-                    (intern_id, attendance_date, status, check_in)
-                    VALUES (?, ?, ?, ?)`,
-                    [internId, date, status, time]
+                    `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
+                     VALUES (?, ?, 'Present', ?)`,
+                    [internId, date, time]
                 );
-
-                console.log(`✅ Attendance inserted as ${status}`);
-
-                // 🔔 Realtime updates
-                io?.to('hr-dashboard')?.emit('attendance-update', {
+                //1
+                // Emit real-time attendance update
+                io.to('hr-dashboard').emit('attendance-update', {
                     intern_id: internId,
                     action: 'check-in',
-                    time,
-                    date,
-                    status
+                    time: time,
+                    date: date
                 });
-
-                io?.to(`intern-${internId}`)?.emit('personal-attendance', {
+                
+                io.to(`intern-${internId}`).emit('personal-attendance', {
                     action: 'check-in',
-                    time,
-                    date,
-                    status
+                    time: time,
+                    date: date
                 });
-
-            } else {
-                console.log("⚠️ Attendance already exists for today");
             }
 
-            // ============================
-            // ✅ TOKEN
-            // ============================
-            const token = encodeToken({
-                id: user.id,
-                name: user.full_name,
-                role: user.role,
-                intern_id: internId
+            // Create token
+            const token = encodeToken({ 
+                id: user.id, 
+                name: user.full_name, 
+                role: user.role, 
+                intern_id: internId 
             });
 
-            return res.json({
-                message: "Login successful",
-                token,
-                role: user.role,
-                intern_id: internId
-            });
+            return res.json({ token });
         }
 
-        // ============================
-        // 🟢 NON-INTERN USERS
-        // ============================
-        const token = encodeToken({
-            id: user.id,
-            role: user.role
-        });
-
-        return res.json({
-            message: "Login successful",
-            token,
-            role: user.role
-        });
+        // For non-intern users
+        const token = encodeToken({ id: user.id, role: user.role });
+        return res.json({ token });
 
     } catch (err) {
-        console.error("❌ Login error:", err);
-        res.status(500).json({
-            message: "Server error",
-            error: err.message
-        });
+        console.error("Login error:", err);
+        res.status(500).json({ message: "Server error", error: err.message });
     }
 });
 
@@ -2054,105 +2007,52 @@ app.post('/api/forgotpass', (req, res) => {
 //for register
 app.post("/api/register", upload.single("profileImage"), async (req, res) => {
     try {
-        const {
-            username,
-            email,
-            password,
-            fullname,
-            ph,
-            role,          // ✅ use role instead of department
-            internRole,    // only for interns
-            internid       // only for interns
-        } = req.body;
-
-        // ✅ Validate required fields
-        if (!username || !email || !password || !fullname || !role) {
-            return res.status(400).json({ error: "Missing required fields" });
-        }
-
-        // ✅ Hash password
+        const { username, email, password, fullname, ph, department, internRole, internid } = req.body;
+        
         const hashed_pass = bcrypt.hashSync(password, 10);
 
-        // ✅ Handle profile image (optional for non-interns)
-        let picUrl = null;
-
-        if (req.file) {
-            const uploadResult = await new Promise((resolve, reject) => {
-                const uploadStream = cloudinary.uploader.upload_stream(
-                    {
-                        folder: `Users/${role}`,
-                        public_id: `${username}_profile`,
-                        resource_type: 'image',
-                        overwrite: true
-                    },
-                    (error, result) => (error ? reject(error) : resolve(result))
-                );
-
-                streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
-            });
-
-            picUrl = uploadResult.secure_url;
+        if (!req.file) {
+            return res.status(400).json({ error: "Profile image is required" });
         }
 
-        // ✅ Insert into USERS table
-        const userSql = `
+        // Upload to Cloudinary
+        const uploadResult = await new Promise((resolve, reject) => {
+            const uploadStream = cloudinary.uploader.upload_stream(
+                {
+                    folder: `Interns/${internid}`,
+                    public_id: 'profile_pic',
+                    resource_type: 'image',
+                    overwrite: true
+                },
+                (error, result) => (error ? reject(error) : resolve(result))
+            );
+            streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
+        });
+
+        const picUrl = uploadResult.secure_url;
+
+        const sql = `
             INSERT INTO users (username, email, password_hash, full_name, phone, role, profile_image)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         `;
 
-        await executeQuery(userSql, [
-            username,
-            email,
-            hashed_pass,
-            fullname,
-            ph || null,
-            role,       // ✅ correct role
-            picUrl
-        ]);
+        // ✅ FIXED: using await
+        await executeQuery(sql, [username, email, hashed_pass, fullname, ph, department, picUrl]);
 
-        // ============================
-        // 🔵 INTERN-SPECIFIC LOGIC
-        // ============================
-        if (role.toLowerCase() === "intern") {
-
-            if (!internid || !internRole) {
-                return res.status(400).json({
-                    error: "Intern ID and Intern Role required"
-                });
-            }
-
-            const internSql = `
-                INSERT INTO Interns (intern_id, name, internrole, email, phone)
+        if (department === "Intern") {
+            const mysqlQuery = `
+                INSERT INTO Interns(intern_id, name, internrole, email, phone)
                 VALUES (?, ?, ?, ?, ?)
             `;
 
-            await executeQuery(internSql, [
-                internid,
-                fullname,
-                internRole,
-                email,
-                ph || null
-            ]);
+            await executeQuery(mysqlQuery, [internid, fullname, internRole, email, ph]);
         }
 
-        // ============================
-        // 🟢 OTHER ROLES (OPTIONAL)
-        // ============================
-        // Example: Doctor table, Patient table etc.
-        // You can extend here later
-
-        res.json({
-            ok: true,
-            message: "Registration successful",
-            role
-        });
+        res.json({ ok: true, message: "Registration successful" });
 
     } catch (err) {
-        console.error("❌ Register error:", err);
-        res.status(500).json({
-            error: "Server error",
-            details: err.message
-        });
+        console.error(err);
+        res.status(500).json({ error: "Server error", details: err.message });
     }
 });
 
@@ -2735,185 +2635,239 @@ app.put('/api/changetask/:taskId', (req, res) => {
 
 // Fetch weekly reports for reports.html dashboard
 app.get('/api/reports', async (req, res) => {
-    try {
-        // Get current week start date (Monday)
-        const today = new Date();
-        const currentWeekStart = new Date(today);
-        const dayOfWeek = today.getDay();
-        const diff = today.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
-        currentWeekStart.setDate(diff);
-        const weekStartDate = currentWeekStart.toISOString().split('T')[0];
+  try {
+    // ================= DATE HELPERS =================
+    const formatDate = (date) => date.toLocaleDateString('en-CA');
 
-        // Query to get weekly report status for all interns with their actual reports
-        const sql = `
-            SELECT 
-                i.intern_id,
-                i.name,
-                i.department,
-                COALESCE(wr.wednesday_status, 'Missing') as wed,
-                COALESCE(wr.saturday_status, 'Missing') as sat,
-                COALESCE(wr.last_submission_date, NULL) as lastSub,
-                wr.week_start_date,
-                (SELECT COUNT(*) FROM Reports r 
-                 WHERE r.intern_id = i.intern_id 
-                 AND DATE(r.submitted_at) >= ?) as total_reports,
-                -- Get Wednesday report file_path if submitted this week
-                (SELECT r.file_path FROM Reports r 
-                 WHERE r.intern_id = i.intern_id 
-                 AND DATE(r.submitted_at) >= ?
-                 AND DAYOFWEEK(r.submitted_at) = 4
-                 ORDER BY r.submitted_at DESC LIMIT 1) as wednesday_file_path,
-                -- Get Saturday report file_path if submitted this week
-                (SELECT r.file_path FROM Reports r 
-                 WHERE r.intern_id = i.intern_id 
-                 AND DATE(r.submitted_at) >= ?
-                 AND DAYOFWEEK(r.submitted_at) = 7
-                 ORDER BY r.submitted_at DESC LIMIT 1) as saturday_file_path,
-                -- Get Wednesday report ID if submitted this week
-                (SELECT r.id FROM Reports r 
-                 WHERE r.intern_id = i.intern_id 
-                 AND DATE(r.submitted_at) >= ?
-                 AND DAYOFWEEK(r.submitted_at) = 4
-                 ORDER BY r.submitted_at DESC LIMIT 1) as wednesday_report_id,
-                -- Get Saturday report ID if submitted this week
-                (SELECT r.id FROM Reports r 
-                 WHERE r.intern_id = i.intern_id 
-                 AND DATE(r.submitted_at) >= ?
-                 AND DAYOFWEEK(r.submitted_at) = 7
-                 ORDER BY r.submitted_at DESC LIMIT 1) as saturday_report_id
-            FROM Interns i
-            LEFT JOIN weekly_reports wr ON i.intern_id = wr.intern_id 
-                AND wr.week_start_date = ?
-            WHERE i.status = 'Active'
-            ORDER BY i.name
-        `;
-
-        db.query(sql, [weekStartDate, weekStartDate, weekStartDate, weekStartDate, weekStartDate, weekStartDate], (err, rows) => {
-            if (err) {
-                console.error('Error fetching weekly reports:', err);
-                return res.status(500).json({ error: 'Failed to fetch reports' });
-            }
-
-            // Transform data to match expected format
-            const reports = rows.map(row => ({
-                name: row.name,
-                dept: row.department,
-                wed: row.wed,
-                sat: row.sat,
-                lastSub: row.lastSub || '—',
-                total_reports: row.total_reports,
-                wednesday_file_path: row.wednesday_file_path,
-                saturday_file_path: row.saturday_file_path,
-                wednesday_report_id: row.wednesday_report_id,
-                saturday_report_id: row.saturday_report_id
-            }));
-
-            res.json(reports);
-        });
-    } catch (error) {
-        console.error('Error in reports endpoint:', error);
-        res.status(500).json({ error: 'Internal server error' });
+    // Get week filter from query parameter
+    const weekFilter = req.query.week || 'current';
+    
+    const today = new Date();
+    let currentWeekStart = new Date(today);
+    
+    // Calculate week start based on filter
+    if (weekFilter === 'prev1') {
+      currentWeekStart.setDate(today.getDate() - 7);
+    } else if (weekFilter === 'prev2') {
+      currentWeekStart.setDate(today.getDate() - 14);
     }
+    // For 'current' or any other value, use current week
+    
+    const dayOfWeek = currentWeekStart.getDay();
+    const diff = currentWeekStart.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+    currentWeekStart.setDate(diff);
+
+    const weekStartDate = formatDate(currentWeekStart);
+
+    // ================= QUERY =================
+    const sql = `
+      SELECT 
+        i.intern_id,
+        i.name,
+        i.department,
+
+        -- Check actual Reports table for Wednesday submissions this week
+        CASE 
+          WHEN EXISTS (
+            SELECT 1 FROM Reports r 
+            WHERE r.intern_id = i.intern_id 
+            AND DATE(r.submitted_at) >= ?
+            AND DAYOFWEEK(r.submitted_at) = 4
+          ) THEN 'Submitted'
+          ELSE 'Missing'
+        END AS wed,
+
+        -- Check actual Reports table for Saturday submissions this week  
+        CASE 
+          WHEN EXISTS (
+            SELECT 1 FROM Reports r 
+            WHERE r.intern_id = i.intern_id 
+            AND DATE(r.submitted_at) >= ?
+            AND DAYOFWEEK(r.submitted_at) = 7
+          ) THEN 'Submitted'
+          ELSE 'Missing'
+        END AS sat,
+
+        -- Get latest submission date from Reports table
+        (SELECT MAX(DATE(submitted_at)) 
+         FROM Reports r 
+         WHERE r.intern_id = i.intern_id 
+         AND DATE(r.submitted_at) >= ?
+        ) AS lastSub,
+
+        -- Get file paths and IDs for the most recent reports
+        (SELECT r.file_path 
+         FROM Reports r 
+         WHERE r.intern_id = i.intern_id 
+         AND DATE(r.submitted_at) >= ?
+         AND DAYOFWEEK(r.submitted_at) = 4
+         ORDER BY r.submitted_at DESC 
+         LIMIT 1
+        ) AS wednesday_file_path,
+
+        (SELECT r.id
+         FROM Reports r 
+         WHERE r.intern_id = i.intern_id 
+         AND DATE(r.submitted_at) >= ?
+         AND DAYOFWEEK(r.submitted_at) = 4
+         ORDER BY r.submitted_at DESC 
+         LIMIT 1
+        ) AS wednesday_report_id,
+
+        (SELECT r.file_path 
+         FROM Reports r 
+         WHERE r.intern_id = i.intern_id 
+         AND DATE(r.submitted_at) >= ?
+         AND DAYOFWEEK(r.submitted_at) = 7
+         ORDER BY r.submitted_at DESC 
+         LIMIT 1
+        ) AS saturday_file_path,
+
+        (SELECT r.id
+         FROM Reports r 
+         WHERE r.intern_id = i.intern_id 
+         AND DATE(r.submitted_at) >= ?
+         AND DAYOFWEEK(r.submitted_at) = 7
+         ORDER BY r.submitted_at DESC 
+         LIMIT 1
+        ) AS saturday_report_id,
+
+        -- Total reports THIS WEEK ONLY
+        (SELECT COUNT(*) 
+         FROM Reports r 
+         WHERE r.intern_id = i.intern_id 
+         AND DATE(r.submitted_at) >= ?
+        ) AS total_reports
+
+      FROM Interns i
+      WHERE i.status = 'Active'
+      ORDER BY i.name
+    `;
+
+    db.query(
+      sql,
+      [weekStartDate, weekStartDate, weekStartDate, weekStartDate, weekStartDate, weekStartDate, weekStartDate, weekStartDate, weekStartDate],
+      (err, rows) => {
+        if (err) {
+          console.error('Error fetching reports:', err);
+          return res.status(500).json({ error: 'Failed to fetch reports' });
+        }
+
+        const reports = rows.map(row => ({
+          name: row.name,
+          dept: row.department,
+          wed: row.wed,
+          sat: row.sat,
+          lastSub: row.lastSub || '—',
+          total_reports: row.total_reports,
+          wednesday_file_path: row.wednesday_file_path,
+          saturday_file_path: row.saturday_file_path,
+          wednesday_report_id: row.wednesday_report_id,
+          saturday_report_id: row.saturday_report_id
+        }));
+
+        res.json(reports);
+      }
+    );
+
+  } catch (error) {
+    console.error('Error in reports endpoint:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
   
   // POST /api/reports/upload
   // Upload a new report file
 app.post('/api/reports/upload', async (req, res) => {
   try {
-    const { intern_id, report_title, report_description, due_date, file_path } = req.body;
+    const {
+      intern_id,
+      report_title,
+      report_description,
+      due_date,
+      file_path
+    } = req.body;
 
     console.log(req.body);
 
-    // ✅ Clean validation
+    // ================= VALIDATION =================
     if (!intern_id) return res.status(400).json({ error: 'intern_id is required' });
     if (!report_title) return res.status(400).json({ error: 'report_title is required' });
-    if (!report_description) return res.status(400).json({ error: 'report_description is required' });
-    if (!due_date) return res.status(400).json({ error: 'due_date is required' });
     if (!file_path) return res.status(400).json({ error: 'file_path is required' });
+    if (!due_date) return res.status(400).json({ error: 'due_date is required' });
+
+    // ================= DATE HELPERS =================
+    const formatDate = (date) => {
+      return date.toLocaleDateString('en-CA'); // YYYY-MM-DD (LOCAL TIME)
+    };
+
+    const submissionDate = new Date();
+    const dayOfWeek = submissionDate.getDay(); // 0=Sun, 3=Wed, 6=Sat
+
+    // ================= ALLOW ONLY WED & SAT =================
+    if (dayOfWeek !== 3 && dayOfWeek !== 6) {
+      return res.status(400).json({
+        error: 'Reports can only be submitted on Wednesday or Saturday'
+      });
+    }
 
     // ================= INSERT REPORT =================
-    const sql = `
+    const insertSql = `
       INSERT INTO Reports 
       (intern_id, report_title, report_description, file_path, status, due_date, submitted_at)
       VALUES (?, ?, ?, ?, 'Pending', ?, NOW())
     `;
 
-    const insertResult = await executeQuery(sql, [
+    const insertResult = await executeQuery(insertSql, [
       intern_id,
       report_title,
       report_description || null,
       file_path,
-      due_date || null,
+      due_date
     ]);
+
     const reportId = insertResult.insertId;
 
-    // ================= DATE LOGIC =================
-    const submissionDate = new Date();
-    const dayOfWeek = submissionDate.getDay(); // 0 = Sunday, 3 = Wednesday, 6 = Saturday
+    // ================= WEEK START (MONDAY) =================
     const weekStart = new Date(submissionDate);
-    const diff = submissionDate.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+    const day = submissionDate.getDay();
+    const diff = weekStart.getDate() - day + (day === 0 ? -6 : 1);
     weekStart.setDate(diff);
-    const weekStartDate = weekStart.toISOString().split('T')[0];
 
-    // ================= STATUS LOGIC =================
-    let updateField = '';
-    if (dayOfWeek === 3) { // Wednesday
-      updateField = 'wednesday_status';
-    } else if (dayOfWeek === 6) { // Saturday
-      updateField = 'saturday_status';
-    } else {
-      // For other days, update both statuses to Submitted since report was uploaded
-      updateField = 'both';
-    }
+    const weekStartDate = formatDate(weekStart);
+    const formattedSubmissionDate = formatDate(submissionDate);
 
-    // Update weekly_reports table with report ID
-    let weeklyReportsSql;
-    let weeklyReportsParams;
+    // ================= STATUS FIELD =================
+    const isWednesday = dayOfWeek === 3;
 
-    if (updateField === 'both') {
-      // Update both Wednesday and Saturday status for non-report days
-      weeklyReportsSql = `
-        INSERT INTO weekly_reports (intern_id, week_start_date, wednesday_status, saturday_status, wednesday_report_id, saturday_report_id, last_submission_date)
-        VALUES (?, ?, 'Submitted', 'Submitted', ?, ?, ?)
-        ON DUPLICATE KEY UPDATE 
-        wednesday_status = 'Submitted',
-        saturday_status = 'Submitted',
-        wednesday_report_id = VALUES(wednesday_report_id),
-        saturday_report_id = VALUES(saturday_report_id),
-        last_submission_date = VALUES(last_submission_date)
-      `;
-      weeklyReportsParams = [
-        intern_id,
-        weekStartDate,
-        reportId,
-        reportId,
-        submissionDate.toISOString().split('T')[0]
-      ];
-    } else {
-      // Update specific day status
-      const reportIdField = updateField === 'wednesday_status' ? 'wednesday_report_id' : 'saturday_report_id';
-      weeklyReportsSql = `
-        INSERT INTO weekly_reports (intern_id, week_start_date, ${updateField}, ${reportIdField}, last_submission_date)
-        VALUES (?, ?, 'Submitted', ?, ?)
-        ON DUPLICATE KEY UPDATE 
-        ${updateField} = 'Submitted',
+    const statusField = isWednesday ? 'wednesday_status' : 'saturday_status';
+    const reportIdField = isWednesday ? 'wednesday_report_id' : 'saturday_report_id';
+
+    // ================= UPSERT WEEKLY REPORT =================
+    const weeklySql = `
+      INSERT INTO weekly_reports 
+      (intern_id, week_start_date, ${statusField}, ${reportIdField}, last_submission_date)
+      VALUES (?, ?, 'Submitted', ?, ?)
+      ON DUPLICATE KEY UPDATE 
+        ${statusField} = 'Submitted',
         ${reportIdField} = VALUES(${reportIdField}),
         last_submission_date = VALUES(last_submission_date)
-      `;
-      weeklyReportsParams = [
-        intern_id,
-        weekStartDate,
-        reportId,
-        submissionDate.toISOString().split('T')[0]
-      ];
-    }
+    `;
 
-    await executeQuery(weeklyReportsSql, weeklyReportsParams);
+    await executeQuery(weeklySql, [
+      intern_id,
+      weekStartDate,
+      reportId,
+      formattedSubmissionDate
+    ]);
 
     // ================= RESPONSE =================
     res.json({
       message: 'Report uploaded successfully',
-      fileUrl: file_path
+      report_id: reportId,
+      fileUrl: file_path,
+      submitted_on: formattedSubmissionDate,
+      week_start: weekStartDate
     });
 
   } catch (err) {
@@ -2975,8 +2929,41 @@ app.get('/api/reports/download-file', (req, res) => {
       res.status(500).json({ error: 'Failed to update status' });
     }
   });
-  
 
+// Debug endpoint to check Reports table data
+app.get('/api/debug/reports', (req, res) => {
+  const sql = `
+    SELECT 
+      id,
+      intern_id,
+      report_title,
+      DATE(submitted_at) as submitted_date,
+      DAYOFWEEK(submitted_at) as day_of_week,
+      DAYNAME(submitted_at) as day_name,
+      file_path,
+      status
+    FROM Reports 
+    ORDER BY submitted_at DESC 
+    LIMIT 10
+  `;
+  
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error('Debug query error:', err);
+      return res.status(500).json({ error: 'Debug query failed' });
+    }
+    
+    console.log('=== DEBUG: Reports Table Data ===');
+    console.log('Number of recent reports:', rows.length);
+    console.log('Sample reports:', rows);
+    
+    res.json({
+      message: 'Debug data from Reports table',
+      count: rows.length,
+      data: rows
+    });
+  });
+});
 
 // Update the dashboard stats endpoint
 app.get('/api/dashboard-stats', async (req, res) => {
@@ -3168,13 +3155,14 @@ app.get("/api/profile", authenticateToken, async (req, res) => {
   //console.log('🔍 User from token:', req.user);
  // console.log('🔍 User intern_id:', req);
   try {
-      console.log(req.user)
     const query = `
-      SELECT id, role,username,full_name,profile_image FROM users WHERE id = ?
+      SELECT id, internrole as role, name, email, profile_image, department, status 
+      FROM Interns 
+      WHERE intern_id = ?
     `;
     
     //console.log('🔍 Querying for intern_id:', req.user?.intern_id);
-    const [results] = await executeQuery(query, [req.user.id]);
+    const [results] = await executeQuery(query, [req.user.intern_id]);
     
     //console.log('🔍 Query results:', results);
     
