@@ -1915,7 +1915,7 @@ app.post("/api/login", async (req, res) => {
             }
 
             const internId = internResults[0].intern_id;
-            console.log("intern id:-",internId)
+            console.log("intern id:-",internResults[0])
             const now = new Date();
             const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
 
