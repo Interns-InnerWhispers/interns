@@ -1931,7 +1931,7 @@ app.post("/api/login", async (req, res) => {
                 `SELECT * FROM Attendance WHERE intern_id = ? AND attendance_date = ?`,
                 [internId, date]
             );
-
+            console.log("existingAttendance",existingAttendance)
             const token = encodeToken({
                 id: user.id,
                 name: user.full_name,
@@ -1951,11 +1951,20 @@ app.post("/api/login", async (req, res) => {
                 status = "Absent";
             }
             console.log(data, status, time)
-            await executeQuery(
-                `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
-                 VALUES (?, ?, ?, ?)`,
-                [internId, date, status, time]
-            );
+            const result = await executeQuery(
+  `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
+   VALUES (?, ?, ?, ?)`,
+  [internId, date, status, time]
+);
+
+console.log("INSERT RESULT:", result);
+            console.log("---- DEBUG START ----");
+console.log("User:", user);
+console.log("Intern Results:", internResults);
+console.log("Existing Attendance:", existingAttendance);
+console.log("Intern ID:", internId);
+console.log("Date:", date, "Time:", time, "Status:", status);
+console.log("---- DEBUG END ----");
 
             io.to('hr-dashboard').emit('attendance-update', {
                 intern_id: internId,
