@@ -1892,7 +1892,7 @@ app.post("/api/login", async (req, res) => {
             return res.status(401).json({ message: "Invalid email or password" });
         }
 
-        const user = users[0];
+        const user = users[0][0];
         console.log(user)
 
         // 🔐 Compare password
@@ -1915,7 +1915,7 @@ app.post("/api/login", async (req, res) => {
             }
 
             const internId = internResults[0].intern_id;
-
+            console.log(internId)
             const now = new Date();
             const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
 
