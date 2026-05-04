@@ -1878,95 +1878,124 @@ app.get('/api/notifications/unread-count', authenticateToken, async (req, res) =
 app.post("/api/login", async (req, res) => {
     try {
         const { email, password } = req.body;
-        console.log(email," ", password)
-        const [users] = await executeQuery("SELECT * FROM users WHERE email = ?", [email]);
-        
+
+        const users = await executeQuery(
+            "SELECT * FROM users WHERE email = ?", 
+            [email]
+        );
+
         if (users.length === 0) {
             return res.status(401).json({ message: "Invalid email" });
         }
 
         const user = users[0];
-        
-        // Check if password_hash exists
+
         if (!user.password_hash) {
-            console.error('User found but no password_hash:', user);
             return res.status(401).json({ message: "Invalid credentials" });
         }
-        
+
         const match = await bcrypt.compare(password, user.password_hash);
-        
+
         if (!match) {
             return res.status(401).json({ message: "Invalid password" });
         }
-        console.log("user role",user.role)
-        // If Intern — handle attendance
+
+        // 🔹 INTERN FLOW
         if (user.role.toLowerCase() === "intern") {
+
             const internResults = await executeQuery(
-                "SELECT intern_id, name FROM Interns WHERE email = ?", 
+                "SELECT intern_id FROM Interns WHERE email = ?", 
                 [email]
-            ); 
+            );
 
             if (internResults.length === 0) {
                 return res.status(401).json({ message: "Intern not found" });
             }
 
-            const internId = internResults[0][0].intern_id;
-            console.log(internResults)
-            console.log(internId)
+            const internId = internResults[0].intern_id;
 
-            // Get current IST date & time
+            // ✅ IST time
             const now = new Date();
-            const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)); // Convert UTC → IST
-            const date = istNow.toISOString().slice(0, 10); // YYYY-MM-DD
-            const time = istNow.toTimeString().slice(0, 8); // HH:MM:SS
+            const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
 
-            // ✅ Check if attendance already exists for today
+            const date = istNow.toISOString().slice(0, 10);
+            const time = istNow.toTimeString().slice(0, 8);
+
+            const currentMinutes = istNow.getHours() * 60 + istNow.getMinutes();
+
+            const startTime = 18 * 60 + 30;
+            const lateTime = 18 * 60 + 35;
+            const absentTime = 18 * 60 + 45;
+
+            // 🔍 Check attendance
             const existingAttendance = await executeQuery(
                 `SELECT * FROM Attendance WHERE intern_id = ? AND attendance_date = ?`,
                 [internId, date]
             );
 
-            if (existingAttendance.length === 0) {
-                // Insert only if not present already
-                await executeQuery(
-                    `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
-                     VALUES (?, ?, 'Present', ?)`,
-                    [internId, date, time]
-                );
-                //1
-                // Emit real-time attendance update
-                io.to('hr-dashboard').emit('attendance-update', {
-                    intern_id: internId,
-                    action: 'check-in',
-                    time: time,
-                    date: date
-                });
-                
-                io.to(`intern-${internId}`).emit('personal-attendance', {
-                    action: 'check-in',
-                    time: time,
-                    date: date
-                });
-            }
-
-            // Create token
-            const token = encodeToken({ 
-                id: user.id, 
-                name: user.full_name, 
-                role: user.role, 
-                intern_id: internId 
+            // 🎯 Always allow login
+            const token = encodeToken({
+                id: user.id,
+                name: user.full_name,
+                role: user.role,
+                intern_id: internId
             });
 
-            return res.json({ token });
+            // If already marked → just login
+            if (existingAttendance.length > 0) {
+                return res.json({ token });
+            }
+
+            let status = "Present";
+
+            if (currentMinutes >= lateTime && currentMinutes <= absentTime) {
+                status = "Late";
+            } else if (currentMinutes > absentTime) {
+                status = "Absent";
+            }
+
+            // Insert attendance
+            await executeQuery(
+                `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
+                 VALUES (?, ?, ?, ?)`,
+                [internId, date, status, time]
+            );
+
+            // 🔴 Real-time updates
+            io.to('hr-dashboard').emit('attendance-update', {
+                intern_id: internId,
+                status,
+                time,
+                date
+            });
+
+            io.to(`intern-${internId}`).emit('personal-attendance', {
+                status,
+                time,
+                date
+            });
+
+            return res.json({
+                message: status === "Late"
+                    ? "You are late."
+                    : status === "Absent"
+                    ? "Marked absent."
+                    : "On time",
+                token
+            });
         }
 
-        // For non-intern users
-        const token = encodeToken({ id: user.id, role: user.role });
+        // 🔹 NON-INTERN USERS
+        const token = encodeToken({
+            id: user.id,
+            role: user.role
+        });
+
         return res.json({ token });
 
     } catch (err) {
-        console.error("Login error:", err);
-        res.status(500).json({ message: "Server error", error: err.message });
+        console.error(err);
+        res.status(500).json({ message: "Server error" });
     }
 });
 
