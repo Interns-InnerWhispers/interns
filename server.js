@@ -1915,7 +1915,7 @@ app.post("/api/login", async (req, res) => {
             }
 
             const internId = internResults[0][0].intern_id;
-            console.log("intern id:-",internResults[0])
+            console.log("intern id:-",internId)
             const now = new Date();
             const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
 
@@ -1950,7 +1950,7 @@ app.post("/api/login", async (req, res) => {
             } else if (currentMinutes > absentTime) {
                 status = "Absent";
             }
-
+            console.log(data, status, time)
             await executeQuery(
                 `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
                  VALUES (?, ?, ?, ?)`,
