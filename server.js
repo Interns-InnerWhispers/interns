@@ -1879,42 +1879,42 @@ app.post("/api/login", async (req, res) => {
     try {
         const { email, password } = req.body;
 
+        if (!email || !password) {
+            return res.status(400).json({ message: "Email and password required" });
+        }
+
         const users = await executeQuery(
-            "SELECT * FROM users WHERE email = ?", 
+            "SELECT * FROM users WHERE email = ?",
             [email]
         );
 
         if (users.length === 0) {
-            return res.status(401).json({ message: "Invalid email" });
+            return res.status(401).json({ message: "Invalid email or password" });
         }
 
         const user = users[0];
 
-        if (!user.password_hash) {
-            return res.status(401).json({ message: "Invalid credentials" });
-        }
-
+        // 🔐 Compare password
         const match = await bcrypt.compare(password, user.password_hash);
 
         if (!match) {
-            return res.status(401).json({ message: "Invalid password" });
+            return res.status(401).json({ message: "Invalid email or password" });
         }
 
         // 🔹 INTERN FLOW
         if (user.role.toLowerCase() === "intern") {
 
             const internResults = await executeQuery(
-                "SELECT intern_id FROM Interns WHERE email = ?", 
+                "SELECT intern_id FROM Interns WHERE email = ?",
                 [email]
             );
 
             if (internResults.length === 0) {
-                return res.status(401).json({ message: "Intern not found" });
+                return res.status(404).json({ message: "Intern record not found" });
             }
 
             const internId = internResults[0].intern_id;
 
-            // ✅ IST time
             const now = new Date();
             const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
 
@@ -1923,17 +1923,14 @@ app.post("/api/login", async (req, res) => {
 
             const currentMinutes = istNow.getHours() * 60 + istNow.getMinutes();
 
-            const startTime = 18 * 60 + 30;
             const lateTime = 18 * 60 + 35;
             const absentTime = 18 * 60 + 45;
 
-            // 🔍 Check attendance
             const existingAttendance = await executeQuery(
                 `SELECT * FROM Attendance WHERE intern_id = ? AND attendance_date = ?`,
                 [internId, date]
             );
 
-            // 🎯 Always allow login
             const token = encodeToken({
                 id: user.id,
                 name: user.full_name,
@@ -1941,7 +1938,6 @@ app.post("/api/login", async (req, res) => {
                 intern_id: internId
             });
 
-            // If already marked → just login
             if (existingAttendance.length > 0) {
                 return res.json({ token });
             }
@@ -1954,14 +1950,12 @@ app.post("/api/login", async (req, res) => {
                 status = "Absent";
             }
 
-            // Insert attendance
             await executeQuery(
                 `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
                  VALUES (?, ?, ?, ?)`,
                 [internId, date, status, time]
             );
 
-            // 🔴 Real-time updates
             io.to('hr-dashboard').emit('attendance-update', {
                 intern_id: internId,
                 status,
@@ -1976,11 +1970,7 @@ app.post("/api/login", async (req, res) => {
             });
 
             return res.json({
-                message: status === "Late"
-                    ? "You are late."
-                    : status === "Absent"
-                    ? "Marked absent."
-                    : "On time",
+                message: status,
                 token
             });
         }
