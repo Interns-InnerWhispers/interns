@@ -1879,43 +1879,57 @@ app.post("/api/login", async (req, res) => {
     try {
         const { email, password } = req.body;
 
+        // ✅ Basic validation
         if (!email || !password) {
             return res.status(400).json({ message: "Email and password required" });
         }
 
-        const users = await executeQuery(
+        console.log("🔐 Login attempt:", email);
+
+        // ============================
+        // ✅ GET USER
+        // ============================
+        const [[user]] = await executeQuery(
             "SELECT * FROM users WHERE email = ?",
             [email]
         );
 
-        if (users.length === 0) {
+        if (!user) {
             return res.status(401).json({ message: "Invalid email or password" });
         }
 
-        const user = users[0][0];
-        console.log(user)
-
-        // 🔐 Compare password
-        const match = await bcrypt.compare(password, user.password_hash);
+        // ============================
+        // 🔐 PASSWORD CHECK
+        // ============================
+        const match = await bcrypt.compare(password.trim(), user.password_hash);
 
         if (!match) {
             return res.status(401).json({ message: "Invalid email or password" });
         }
 
-        // 🔹 INTERN FLOW
+        console.log("✅ Login success:", user.role);
+
+        // ============================
+        // 🔵 INTERN LOGIN LOGIC
+        // ============================
         if (user.role.toLowerCase() === "intern") {
 
-            const internResults = await executeQuery(
+            // ✅ Get intern details
+            const [[intern]] = await executeQuery(
                 "SELECT intern_id FROM Interns WHERE email = ?",
                 [email]
             );
 
-            if (internResults.length === 0) {
+            if (!intern) {
                 return res.status(404).json({ message: "Intern record not found" });
             }
 
-            const internId = internResults[0][0].intern_id;
-            console.log("intern id:-",internId)
+            const internId = intern.intern_id;
+            console.log("👤 Intern ID:", internId);
+
+            // ============================
+            // ⏰ TIME (IST)
+            // ============================
             const now = new Date();
             const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
 
@@ -1924,14 +1938,58 @@ app.post("/api/login", async (req, res) => {
 
             const currentMinutes = istNow.getHours() * 60 + istNow.getMinutes();
 
-            const lateTime = 18 * 60 + 35;
-            const absentTime = 18 * 60 + 45;
+            // 🎯 TIME RULES
+            let status = "Present";
 
-            const existingAttendance = await executeQuery(
-                `SELECT * FROM Attendance WHERE intern_id = ? AND attendance_date = ?`,
+            if (currentMinutes > (18 * 60 + 40)) {
+                status = "Late";
+            }
+
+            if (currentMinutes > (19 * 60)) {
+                status = "Absent";
+            }
+
+            // ============================
+            // ✅ CHECK EXISTING ATTENDANCE
+            // ============================
+            const [[existing]] = await executeQuery(
+                `SELECT id FROM Attendance 
+                 WHERE intern_id = ? AND attendance_date = ?`,
                 [internId, date]
             );
-            console.log("existingAttendance",existingAttendance)
+
+            if (!existing) {
+                // ✅ INSERT ATTENDANCE
+                const insertResult = await executeQuery(
+                    `INSERT INTO Attendance 
+                     (intern_id, attendance_date, status, check_in)
+                     VALUES (?, ?, ?, ?)`,
+                    [internId, date, status, time]
+                );
+
+                console.log("✅ Attendance inserted:", status, insertResult);
+
+                // 🔔 REAL-TIME EVENTS (safe)
+                io?.to('hr-dashboard')?.emit('attendance-update', {
+                    intern_id: internId,
+                    status,
+                    time,
+                    date
+                });
+
+                io?.to(`intern-${internId}`)?.emit('personal-attendance', {
+                    status,
+                    time,
+                    date
+                });
+
+            } else {
+                console.log("⚠️ Attendance already marked for today");
+            }
+
+            // ============================
+            // ✅ TOKEN
+            // ============================
             const token = encodeToken({
                 id: user.id,
                 name: user.full_name,
@@ -1939,63 +1997,34 @@ app.post("/api/login", async (req, res) => {
                 intern_id: internId
             });
 
-            if (existingAttendance.length > 0) {
-                return res.json({ token });
-            }
-
-            let status = "Present";
-
-            if (currentMinutes >= lateTime && currentMinutes <= absentTime) {
-                status = "Late";
-            } else if (currentMinutes > absentTime) {
-                status = "Absent";
-            }
-            console.log(data, status, time)
-            const result = await executeQuery(
-  `INSERT INTO Attendance (intern_id, attendance_date, status, check_in)
-   VALUES (?, ?, ?, ?)`,
-  [internId, date, status, time]
-);
-
-console.log("INSERT RESULT:", result);
-            console.log("---- DEBUG START ----");
-console.log("User:", user);
-console.log("Intern Results:", internResults);
-console.log("Existing Attendance:", existingAttendance);
-console.log("Intern ID:", internId);
-console.log("Date:", date, "Time:", time, "Status:", status);
-console.log("---- DEBUG END ----");
-
-            io.to('hr-dashboard').emit('attendance-update', {
-                intern_id: internId,
-                status,
-                time,
-                date
-            });
-
-            io.to(`intern-${internId}`).emit('personal-attendance', {
-                status,
-                time,
-                date
-            });
-
             return res.json({
-                message: status,
-                token
+                message: "Login successful",
+                token,
+                role: user.role,
+                intern_id: internId
             });
         }
 
-        // 🔹 NON-INTERN USERS
+        // ============================
+        // 🟢 NON-INTERN USERS
+        // ============================
         const token = encodeToken({
             id: user.id,
             role: user.role
         });
 
-        return res.json({ token });
+        return res.json({
+            message: "Login successful",
+            token,
+            role: user.role
+        });
 
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Server error" });
+        console.error("❌ Login error:", err);
+        res.status(500).json({
+            message: "Server error",
+            error: err.message
+        });
     }
 });
 
