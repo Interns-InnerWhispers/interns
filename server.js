@@ -1893,6 +1893,7 @@ app.post("/api/login", async (req, res) => {
         }
 
         const user = users[0];
+        console.log(user)
 
         // 🔐 Compare password
         const match = await bcrypt.compare(password, user.password_hash);
