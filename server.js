@@ -878,11 +878,12 @@ UpdateAttendanceTable();
 
     async function UpdateReportsTable() {
     const queries = [
-        `ALTER TABLE Reports ADD COLUMN report_type VARCHAR(50) DEFAULT 'weekly'`,
+        `ALTER TABLE Reports ADD COLUMN IF NOT EXISTS report_type ENUM('wednesday', 'saturday') DEFAULT 'wednesday'`,
         `ALTER TABLE Reports ADD COLUMN submission_date DATE`,
         `ALTER TABLE Reports ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
         `ALTER TABLE Reports ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`,
-        `ALTER TABLE Reports MODIFY COLUMN status ENUM('Pending','Reviewed','Rejected','Submitted') DEFAULT 'Submitted'`
+        `ALTER TABLE Reports MODIFY COLUMN status ENUM('Pending','Reviewed','Rejected','Submitted') DEFAULT 'Submitted'`,
+        `UPDATE Reports SET report_type = CASE WHEN DAYOFWEEK(submitted_at) IN (3, 4, 5) THEN 'wednesday' ELSE 'saturday' END WHERE report_type IS NULL OR report_type = 'wednesday' OR report_type = 'weekly'`
     ];
 
     for (let q of queries) {
@@ -2730,7 +2731,7 @@ app.get('/api/reports', async (req, res) => {
             SELECT 1 FROM Reports r 
             WHERE r.intern_id = i.intern_id 
             AND DATE(r.submitted_at) >= ?
-            AND DAYOFWEEK(r.submitted_at) = 4
+            AND (r.report_type = 'wednesday' OR DAYOFWEEK(r.submitted_at) IN (3, 4, 5))
           ) THEN 'Submitted'
           ELSE 'Missing'
         END AS wed,
@@ -2741,7 +2742,7 @@ app.get('/api/reports', async (req, res) => {
             SELECT 1 FROM Reports r 
             WHERE r.intern_id = i.intern_id 
             AND DATE(r.submitted_at) >= ?
-            AND DAYOFWEEK(r.submitted_at) = 7
+            AND (r.report_type = 'saturday' OR DAYOFWEEK(r.submitted_at) IN (1, 2, 6, 7))
           ) THEN 'Submitted'
           ELSE 'Missing'
         END AS sat,
@@ -2758,7 +2759,7 @@ app.get('/api/reports', async (req, res) => {
          FROM Reports r 
          WHERE r.intern_id = i.intern_id 
          AND DATE(r.submitted_at) >= ?
-         AND DAYOFWEEK(r.submitted_at) = 4
+         AND (r.report_type = 'wednesday' OR DAYOFWEEK(r.submitted_at) IN (3, 4, 5))
          ORDER BY r.submitted_at DESC 
          LIMIT 1
         ) AS wednesday_file_path,
@@ -2767,7 +2768,7 @@ app.get('/api/reports', async (req, res) => {
          FROM Reports r 
          WHERE r.intern_id = i.intern_id 
          AND DATE(r.submitted_at) >= ?
-         AND DAYOFWEEK(r.submitted_at) = 4
+         AND (r.report_type = 'wednesday' OR DAYOFWEEK(r.submitted_at) IN (3, 4, 5))
          ORDER BY r.submitted_at DESC 
          LIMIT 1
         ) AS wednesday_report_id,
@@ -2776,7 +2777,7 @@ app.get('/api/reports', async (req, res) => {
          FROM Reports r 
          WHERE r.intern_id = i.intern_id 
          AND DATE(r.submitted_at) >= ?
-         AND DAYOFWEEK(r.submitted_at) = 7
+         AND (r.report_type = 'saturday' OR DAYOFWEEK(r.submitted_at) IN (1, 2, 6, 7))
          ORDER BY r.submitted_at DESC 
          LIMIT 1
         ) AS saturday_file_path,
@@ -2785,7 +2786,7 @@ app.get('/api/reports', async (req, res) => {
          FROM Reports r 
          WHERE r.intern_id = i.intern_id 
          AND DATE(r.submitted_at) >= ?
-         AND DAYOFWEEK(r.submitted_at) = 7
+         AND (r.report_type = 'saturday' OR DAYOFWEEK(r.submitted_at) IN (1, 2, 6, 7))
          ORDER BY r.submitted_at DESC 
          LIMIT 1
         ) AS saturday_report_id,
@@ -2842,6 +2843,7 @@ app.post('/api/reports/upload', async (req, res) => {
       intern_id,
       report_title,
       report_description,
+      report_type,
       due_date,
       file_path
     } = req.body;
@@ -2852,7 +2854,6 @@ app.post('/api/reports/upload', async (req, res) => {
     if (!intern_id) return res.status(400).json({ error: 'intern_id is required' });
     if (!report_title) return res.status(400).json({ error: 'report_title is required' });
     if (!file_path) return res.status(400).json({ error: 'file_path is required' });
-    if (!due_date) return res.status(400).json({ error: 'due_date is required' });
 
     // ================= DATE HELPERS =================
     const formatDate = (date) => {
@@ -2862,26 +2863,26 @@ app.post('/api/reports/upload', async (req, res) => {
     const submissionDate = new Date();
     const dayOfWeek = submissionDate.getDay(); // 0=Sun, 3=Wed, 6=Sat
 
-    // ================= ALLOW ONLY WED & SAT =================
-    if (dayOfWeek !== 3 && dayOfWeek !== 6) {
-      return res.status(400).json({
-        error: 'Reports can only be submitted on Wednesday or Saturday'
-      });
+    // Auto-determine report_type if not passed
+    let finalReportType = report_type;
+    if (finalReportType !== 'wednesday' && finalReportType !== 'saturday') {
+      finalReportType = (dayOfWeek === 3 || dayOfWeek === 4) ? 'wednesday' : 'saturday';
     }
 
     // ================= INSERT REPORT =================
     const insertSql = `
       INSERT INTO Reports 
-      (intern_id, report_title, report_description, file_path, status, due_date, submitted_at)
-      VALUES (?, ?, ?, ?, 'Pending', ?, NOW())
+      (intern_id, report_title, report_type, report_description, file_path, status, due_date, submitted_at)
+      VALUES (?, ?, ?, ?, ?, 'Pending', ?, NOW())
     `;
 
     const insertResult = await executeQuery(insertSql, [
       intern_id,
       report_title,
+      finalReportType,
       report_description || null,
       file_path,
-      due_date
+      due_date || null
     ]);
 
     const reportId = insertResult.insertId;
@@ -2896,7 +2897,7 @@ app.post('/api/reports/upload', async (req, res) => {
     const formattedSubmissionDate = formatDate(submissionDate);
 
     // ================= STATUS FIELD =================
-    const isWednesday = dayOfWeek === 3;
+    const isWednesday = finalReportType === 'wednesday';
 
     const statusField = isWednesday ? 'wednesday_status' : 'saturday_status';
     const reportIdField = isWednesday ? 'wednesday_report_id' : 'saturday_report_id';
@@ -2923,6 +2924,7 @@ app.post('/api/reports/upload', async (req, res) => {
     res.json({
       message: 'Report uploaded successfully',
       report_id: reportId,
+      report_type: finalReportType,
       fileUrl: file_path,
       submitted_on: formattedSubmissionDate,
       week_start: weekStartDate
@@ -3044,19 +3046,25 @@ app.get('/api/dashboard-stats', async (req, res) => {
 
 app.post('/api/submitreport', async (req, res) => {
   try {
-    const { intern_id, report_title, report_description, file_path } = req.body;
+    const { intern_id, report_title, report_description, report_type, file_path } = req.body;
 
     if (!intern_id || !report_title || !file_path) {
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
+    const dayOfWeek = new Date().getDay();
+    let finalReportType = report_type;
+    if (finalReportType !== 'wednesday' && finalReportType !== 'saturday') {
+      finalReportType = (dayOfWeek === 3 || dayOfWeek === 4) ? 'wednesday' : 'saturday';
+    }
+
     const query = `
-      INSERT INTO Reports (intern_id, report_title, report_description, file_path)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO Reports (intern_id, report_title, report_type, report_description, file_path)
+      VALUES (?, ?, ?, ?, ?)
     `;
 
-    const [result] = await executeQuery(query, [intern_id, report_title, report_description, file_path]);
-    res.json({ message: 'Report submitted successfully', reportId: result.insertId });
+    const [result] = await executeQuery(query, [intern_id, report_title, finalReportType, report_description || null, file_path]);
+    res.json({ message: 'Report submitted successfully', reportId: result.insertId, report_type: finalReportType });
   } catch (err) {
     console.error("DB Insert Error:", err);
     res.status(500).json({ message: 'Database error', error: err });
