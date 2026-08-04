@@ -2692,9 +2692,56 @@ app.put('/api/changetask/:taskId', (req, res) => {
     });
 }); // <--- Added missing closing bracket
 
-// Fetch weekly reports for reports.html dashboard
+// Fetch weekly reports for reports.html dashboard OR individual intern reports
 app.get('/api/reports', async (req, res) => {
   try {
+    const { intern_id, status, project } = req.query;
+
+    // If intern_id is provided, return reports for specific intern (Intern Dashboard view)
+    if (intern_id) {
+      let sql = `
+        SELECT id, report_title, report_type, report_description, file_path, status, submitted_at, due_date 
+        FROM Reports 
+        WHERE intern_id = ?
+      `;
+      const params = [intern_id];
+
+      if (status) {
+        sql += ` AND status = ?`;
+        params.push(status);
+      }
+
+      if (project) {
+        sql += ` AND report_description LIKE ?`;
+        params.push(`%${project}%`);
+      }
+
+      sql += ' ORDER BY submitted_at DESC';
+
+      db.query(sql, params, (err, rows) => {
+        if (err) {
+          console.error('Error fetching intern reports:', err);
+          return res.status(500).json({ error: 'Failed to fetch reports' });
+        }
+        const reports = rows.map(r => ({
+          id: r.id,
+          title: r.report_title || 'Untitled Report',
+          report_title: r.report_title,
+          report_type: r.report_type || 'wednesday',
+          description: r.report_description || '',
+          report_description: r.report_description,
+          file: r.file_path || '',
+          file_path: r.file_path,
+          status: r.status || 'Pending',
+          submittedAt: r.submitted_at ? new Date(r.submitted_at).toISOString().slice(0, 10) : null,
+          dueDate: r.due_date ? new Date(r.due_date).toISOString().slice(0, 10) : null,
+          created_at: r.submitted_at
+        }));
+        res.json(reports);
+      });
+      return;
+    }
+
     // ================= DATE HELPERS =================
     const formatDate = (date) => date.toLocaleDateString('en-CA');
 
