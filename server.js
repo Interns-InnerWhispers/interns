@@ -24,10 +24,12 @@ cloudinary.config({
 const PORT = process.env.PORT || 3006;
 
 /* ------------------------------
-   📧 Brevo SMTP Mail Transporter
+   📧 Brevo Mail Transporter (HTTPS API + SMTP Fallback)
 ------------------------------- */
 const DEFAULT_HR_EMAIL = process.env.HR_EMAIL || 'hr.interns.innerwhispers@gmail.com';
 const DEFAULT_SMTP_FROM = process.env.SMTP_FROM || '"InnerWhispers Wellness LLP" <no-reply@innerwhispers.in>';
+const BREVO_API_KEY = process.env.BREVO_API_KEY || process.env.SMTP_PASS;
+const SMTP_PASS = process.env.SMTP_PASS || process.env.BREVO_API_KEY;
 
 const mailTransporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
@@ -35,24 +37,72 @@ const mailTransporter = nodemailer.createTransport({
   secure: process.env.SMTP_SECURE === 'true',
   auth: {
     user: process.env.SMTP_USER || 'b0cea3001@smtp-brevo.com',
-    pass: process.env.SMTP_PASS,
+    pass: SMTP_PASS,
   },
   connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 10000,
+  tls: {
+    rejectUnauthorized: false
+  }
 });
 
 async function sendEmail({ to, subject, html, text }) {
+  const recipient = to || DEFAULT_HR_EMAIL;
+  if (!recipient) {
+    console.warn('⚠️ sendEmail skipped: No recipient email address available.');
+    return { success: false, error: 'No recipient email address' };
+  }
+
+  // 1. Primary: Try Brevo HTTPS REST API over Port 443 (Immune to cloud host SMTP port blocking)
+  const activeApiKey = BREVO_API_KEY;
+  if (activeApiKey && (activeApiKey.startsWith('xkeysib-') || activeApiKey.startsWith('xsmtpsib-'))) {
+    try {
+      const parsedFrom = DEFAULT_SMTP_FROM.match(/^(?:"?([^"]*)"?\s)?<?([^>]+)>?$/) || [];
+      const senderName = parsedFrom[1] || 'InnerWhispers Wellness LLP';
+      const senderEmail = parsedFrom[2] || 'no-reply@innerwhispers.in';
+
+      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'accept': 'application/json',
+          'api-key': activeApiKey,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          sender: { name: senderName, email: senderEmail },
+          to: [{ email: recipient }],
+          subject: subject,
+          htmlContent: html || text || ''
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        console.log(`✅ Email sent via Brevo HTTPS API to ${recipient} (MessageID: ${data.messageId || 'ok'})`);
+        return { success: true, messageId: data.messageId };
+      } else {
+        const errText = await res.text();
+        console.warn(`⚠️ Brevo HTTPS API error (${res.status}): ${errText}. Retrying via SMTP...`);
+      }
+    } catch (apiErr) {
+      console.warn(`⚠️ Brevo HTTPS API request failed: ${apiErr.message}. Retrying via SMTP...`);
+    }
+  }
+
+  // 2. Secondary: SMTP Transporter Fallback
   try {
     const info = await mailTransporter.sendMail({
       from: DEFAULT_SMTP_FROM,
-      to,
+      to: recipient,
       subject,
       text: text || '',
       html: html || text || '',
     });
-    console.log(`Email sent successfully to ${to} (MessageID: ${info.messageId})`);
+    console.log(`✅ Email sent via SMTP to ${recipient} (MessageID: ${info.messageId})`);
     return { success: true, messageId: info.messageId };
   } catch (err) {
-    console.error(`Error sending email to ${to}:`, err.message);
+    console.error(`❌ Error sending email to ${recipient}:`, err.message);
     return { success: false, error: err.message };
   }
 }
