@@ -3828,9 +3828,9 @@ app.post('/api/leave-requests', async (req, res) => {
 });
 
 // Get leave requests for an intern
-app.get('/api/leave-requests/:intern_id', async (req, res) => {
+app.get('/api/leave-requests/:intern_id?', async (req, res) => {
   try {
-    const internId = req.params.intern_id;
+    const internId = req.params.intern_id || req.query.intern_id;
     if (!internId) {
       return res.status(400).json({ error: 'intern_id is required' });
     }
