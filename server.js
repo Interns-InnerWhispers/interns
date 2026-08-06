@@ -26,18 +26,19 @@ const PORT = process.env.PORT || 3006;
 /* ------------------------------
    📧 Brevo SMTP Mail Transporter
 ------------------------------- */
+const DEFAULT_HR_EMAIL = process.env.HR_EMAIL || 'hr.interns.innerwhispers@gmail.com';
+const DEFAULT_SMTP_FROM = process.env.SMTP_FROM || '"InnerWhispers Wellness LLP" <no-reply@innerwhispers.in>';
+
 const mailTransporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: parseInt(process.env.SMTP_PORT),
+  host: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
+  port: parseInt(process.env.SMTP_PORT || '587'),
   secure: process.env.SMTP_SECURE === 'true',
   auth: {
-    user: process.env.SMTP_USER,
+    user: process.env.SMTP_USER || 'b0cea3001@smtp-brevo.com',
     pass: process.env.SMTP_PASS,
   },
+  connectionTimeout: 10000,
 });
-
-const DEFAULT_HR_EMAIL = process.env.HR_EMAIL;
-const DEFAULT_SMTP_FROM = process.env.SMTP_FROM;
 
 async function sendEmail({ to, subject, html, text }) {
   try {
