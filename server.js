@@ -1103,22 +1103,27 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     }
   });
 
-  // Add leave_type column if it doesn't exist
-  db.query("ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS leave_type ENUM('Sick', 'Casual', 'Annual', 'Maternity', 'Paternity') DEFAULT 'Casual'", (err) => {
-    if (err) {
-      console.error('Error adding leave_type column:', err);
-    } else {
-      console.log('✅ leave_type column added to leave_requests table');
+  // Add/modify leave_type column
+  db.query("ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS leave_type VARCHAR(100) DEFAULT 'Casual Leave'", (err) => {
+    if (!err) {
+      db.query("ALTER TABLE leave_requests MODIFY COLUMN leave_type VARCHAR(100) DEFAULT 'Casual Leave'", () => {});
+      console.log('✅ leave_type column ready in leave_requests table');
     }
   });
 
   // Add remarks column if it doesn't exist
   db.query("ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS remarks TEXT", (err) => {
-    if (err) {
-      console.error('Error adding remarks column:', err);
-    } else {
-      console.log('✅ remarks column added to leave_requests table');
-    }
+    if (!err) console.log('✅ remarks column ready in leave_requests table');
+  });
+
+  // Add reporting_lead column if it doesn't exist
+  db.query("ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS reporting_lead VARCHAR(255)", (err) => {
+    if (!err) console.log('✅ reporting_lead column ready in leave_requests table');
+  });
+
+  // Add handover_note column if it doesn't exist
+  db.query("ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS handover_note TEXT", (err) => {
+    if (!err) console.log('✅ handover_note column ready in leave_requests table');
   });
 
   const createTransctionsTable = `
@@ -3719,8 +3724,8 @@ app.post('/api/leave-requests', async (req, res) => {
     // Insert leave request
     await new Promise((resolve, reject) => {
       db.query(
-        `INSERT INTO leave_requests (intern_id, leave_type, from_date, to_date, number_of_working_days, reason) VALUES (?, ?, ?, ?, ?)`,
-        [intern_id, typeVal, from_date, to_date, number_of_working_days, reason],
+        `INSERT INTO leave_requests (intern_id, leave_type, from_date, to_date, number_of_working_days, reason, reporting_lead, handover_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [intern_id, typeVal, from_date, to_date, number_of_working_days, reason, reporting_lead || null, handover_note || null],
         (err, results) => {
           if (err) reject(err);
           else resolve(results);
@@ -3837,7 +3842,7 @@ app.get('/api/leave-requests/:intern_id?', async (req, res) => {
 
     const rows = await new Promise((resolve, reject) => {
       db.query(
-        `SELECT id, leave_type, from_date, to_date, number_of_working_days, reason, status, remarks, requested_at 
+        `SELECT id, leave_type, from_date, to_date, number_of_working_days, reason, status, remarks, reporting_lead, handover_note, requested_at 
            FROM leave_requests 
            WHERE intern_id = ? 
            ORDER BY requested_at DESC`,
