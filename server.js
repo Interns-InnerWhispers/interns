@@ -108,6 +108,358 @@ async function sendEmail({ to, subject, html, text }) {
 }
 
 /* ------------------------------
+   🎨 InnerWhispers Brand HTML Email Template Builder
+------------------------------- */
+function buildBrandedEmailHtml({ type, title, subtitle, internName, internId, date, time, lateCount, monthName, message, policyNote }) {
+  let accentColor = '#0284C7';
+  let badgeBg = '#E0F2FE';
+  let badgeText = '#0369A1';
+  let borderTopColor = '#0284C7';
+  let iconEmoji = '⏰';
+
+  if (type === 'warning') {
+    accentColor = '#D97706';
+    badgeBg = '#FEF3C7';
+    badgeText = '#92400E';
+    borderTopColor = '#F59E0B';
+    iconEmoji = '⚠️';
+  } else if (type === 'severe') {
+    accentColor = '#DC2626';
+    badgeBg = '#FEE2E2';
+    badgeText = '#991B1B';
+    borderTopColor = '#EF4444';
+    iconEmoji = '🚨';
+  } else if (type === 'hr_notice') {
+    accentColor = '#4338CA';
+    badgeBg = '#E0E7FF';
+    badgeText = '#3730A3';
+    borderTopColor = '#6366F1';
+    iconEmoji = '📋';
+  }
+
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title}</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #F4F7F9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #F4F7F9; padding: 30px 15px;">
+    <tr>
+      <td align="center">
+        <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 600px; background-color: #FFFFFF; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);">
+          
+          <!-- BRAND HEADER (Light background for clear logo visibility) -->
+          <tr>
+            <td style="background-color: #FFFFFF; padding: 22px 28px; text-align: left; border-bottom: 1px solid #F1F5F9;">
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td align="left" style="vertical-align: middle;">
+                    <img src="https://innerwhispers.in/images/innerwhispers-logo-removebg-preview.png" alt="InnerWhispers Wellness" style="height: 52px; max-width: 220px; display: block; border: 0;" />
+                  </td>
+                  <td align="right" style="vertical-align: middle; color: #0F2C59; font-size: 14px; font-weight: 700; letter-spacing: 0.3px;">
+                    InnerWhispers Wellness LLP
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- COLOR ACCENT STRIP -->
+          <tr>
+            <td style="background-color: ${borderTopColor}; height: 4px; font-size: 0; line-height: 0;">&nbsp;</td>
+          </tr>
+
+          <!-- CONTENT BODY -->
+          <tr>
+            <td style="padding: 32px 30px 24px 30px;">
+              
+              <!-- BADGE -->
+              <div style="display: inline-block; background-color: ${badgeBg}; color: ${badgeText}; font-size: 12px; font-weight: 700; padding: 6px 14px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 16px;">
+                ${iconEmoji} ${subtitle}
+              </div>
+
+              <!-- MAIN TITLE -->
+              <h1 style="color: #0F172A; font-size: 22px; font-weight: 700; margin: 0 0 16px 0; line-height: 1.3;">
+                ${title}
+              </h1>
+
+              <p style="color: #475569; font-size: 15px; line-height: 1.6; margin: 0 0 20px 0;">
+                Hello <strong>${internName || 'Intern'}</strong>,
+              </p>
+
+              <p style="color: #475569; font-size: 15px; line-height: 1.6; margin: 0 0 24px 0;">
+                ${message}
+              </p>
+
+              <!-- DETAILS TABLE -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; margin-bottom: 24px;">
+                <tr>
+                  <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0; width: 40%; color: #64748B; font-size: 13px; font-weight: 600;">
+                    Intern ID & Name
+                  </td>
+                  <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0; color: #0F172A; font-size: 14px; font-weight: 600;">
+                    ${internName || 'N/A'} <span style="color: #64748B; font-weight: 400;">(${internId})</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0; color: #64748B; font-size: 13px; font-weight: 600;">
+                    Check-in Date & Time
+                  </td>
+                  <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0; color: #0F172A; font-size: 14px; font-weight: 600;">
+                    ${date} at ${time} IST
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0; color: #64748B; font-size: 13px; font-weight: 600;">
+                    Shift Timings
+                  </td>
+                  <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0; color: #0F172A; font-size: 14px;">
+                    6:30 PM – 10:00 PM <span style="color: #64748B; font-size: 12px;">(Grace period till 6:40 PM)</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 14px 18px; color: #64748B; font-size: 13px; font-weight: 600;">
+                    Monthly Late Count (${monthName})
+                  </td>
+                  <td style="padding: 14px 18px; color: ${accentColor}; font-size: 14px; font-weight: 700;">
+                    ${lateCount} Late ${lateCount === 1 ? 'Entry' : 'Entries'}
+                  </td>
+                </tr>
+              </table>
+
+              <!-- POLICY CALLOUT BOX -->
+              <div style="background-color: ${badgeBg}; border-left: 4px solid ${borderTopColor}; padding: 16px; border-radius: 4px; margin-bottom: 24px;">
+                <p style="margin: 0; color: ${badgeText}; font-size: 14px; line-height: 1.5;">
+                  <strong>Policy Notice:</strong> ${policyNote}
+                </p>
+              </div>
+
+              <!-- BUTTON -->
+              <div style="text-align: center; margin-top: 28px; margin-bottom: 10px;">
+                <a href="https://innerwhispers.in/" target="_blank" style="background-color: #0F2C59; color: #FFFFFF; text-decoration: none; padding: 12px 28px; border-radius: 6px; font-size: 14px; font-weight: 600; display: inline-block;">
+                  Visit InnerWhispers Portal
+                </a>
+              </div>
+
+            </td>
+          </tr>
+
+          <!-- FOOTER -->
+          <tr>
+            <td style="background-color: #F1F5F9; padding: 20px 30px; text-align: center; border-top: 1px solid #E2E8F0;">
+              <p style="margin: 0 0 6px 0; color: #64748B; font-size: 13px; font-weight: 600;">
+                InnerWhispers Wellness LLP
+              </p>
+              <p style="margin: 0; color: #94A3B8; font-size: 12px;">
+                This is an official system notification. For assistance, contact <a href="mailto:hr.interns.innerwhispers@gmail.com" style="color: #0284C7; text-decoration: none;">hr.interns.innerwhispers@gmail.com</a>.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `;
+}
+
+/* ------------------------------
+   ⏰ Intern Attendance & Late Email Notification Handler
+   Shift Timing: 6:30 PM - 10:00 PM IST
+   - 6:30 - 6:40 PM: On-time (Present, 10-min grace window)
+   - 6:41 - 7:00 PM: Late (1st & 2nd late -> Alert email; 3rd+ late -> Warning email + HR email)
+   - 7:01 - 10:00 PM: Severe Late (Strict action email to intern + HR email regardless of count)
+------------------------------- */
+async function processInternCheckIn({ internId, internName, internEmail, date, time }) {
+  const [hh, mm] = time.split(':').map(Number);
+  const currentMinutes = hh * 60 + mm;
+
+  // 🎯 Shift window calculation
+  let status = "Present";
+  if (currentMinutes > (18 * 60 + 40)) { // After 6:40 PM IST
+    status = "Late";
+  }
+
+  // 1. Check if attendance record exists for today
+  const [existingRows] = await executeQuery(
+    `SELECT id, status, check_in FROM Attendance WHERE intern_id = ? AND attendance_date = ?`,
+    [internId, date]
+  );
+
+  if (existingRows && existingRows.length > 0) {
+    const existing = existingRows[0];
+    return { status: existing.status, isNew: false, time: existing.check_in };
+  }
+
+  // 2. Insert new Attendance record
+  await executeQuery(
+    `INSERT INTO Attendance (intern_id, attendance_date, status, check_in) VALUES (?, ?, ?, ?)`,
+    [internId, date, status, time]
+  );
+
+  // 🔔 Emit Socket.IO events safely
+  try {
+    if (typeof io !== 'undefined' && io) {
+      io.to('hr-dashboard')?.emit('attendance-update', {
+        intern_id: internId,
+        status,
+        time,
+        date
+      });
+      io.to(`intern-${internId}`)?.emit('personal-attendance', {
+        status,
+        time,
+        date
+      });
+    }
+  } catch (socketErr) {
+    console.warn('⚠️ Socket emit warning:', socketErr.message);
+  }
+
+  // 3. Handle Email Notifications if status is "Late"
+  if (status === "Late") {
+    try {
+      const monthStr = date.slice(0, 7); // 'YYYY-MM'
+      const dateObj = new Date(date);
+      const monthName = isNaN(dateObj.getTime())
+        ? 'this month'
+        : dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+
+      // Get count of late entries in the current month (including this one)
+      const [countRows] = await executeQuery(
+        `SELECT COUNT(*) as lateCount FROM Attendance 
+         WHERE intern_id = ? AND status = 'Late' AND DATE_FORMAT(attendance_date, '%Y-%m') = ?`,
+        [internId, monthStr]
+      );
+
+      const lateCount = (countRows && countRows[0]) ? countRows[0].lateCount : 1;
+      const recipient = internEmail;
+
+      // Determine if check-in was after 7:00 PM (19:00 IST = 1140 minutes)
+      const isSevereLate = currentMinutes > (19 * 60);
+
+      if (isSevereLate) {
+        // 🚨 SEVERE LATE (7:01 PM - 10:00 PM+)
+        const internHtml = buildBrandedEmailHtml({
+          type: 'severe',
+          title: 'Severe Late Login Notice',
+          subtitle: 'Critical Policy Violation (After 7:00 PM)',
+          internName: internName,
+          internId: internId,
+          date: date,
+          time: time,
+          lateCount: lateCount,
+          monthName: monthName,
+          message: 'Your login today was recorded significantly past the allowed shift start window (after 7:00 PM IST).',
+          policyNote: 'Logging in after 7:00 PM is strictly prohibited. Official shift hours are 6:30 PM to 10:00 PM. A formal warning notice has been issued and escalated directly to Human Resources (HR).'
+        });
+
+        await sendEmail({
+          to: recipient,
+          subject: `STRICT WARNING: Severe Late Login Notice (${date}) - InnerWhispers`,
+          html: internHtml
+        });
+
+        // HR Email: Incident Report
+        const hrHtml = buildBrandedEmailHtml({
+          type: 'hr_notice',
+          title: 'HR Incident Report: Severe Late Login',
+          subtitle: 'HR Incident Alert (After 7:00 PM IST)',
+          internName: internName,
+          internId: internId,
+          date: date,
+          time: time,
+          lateCount: lateCount,
+          monthName: monthName,
+          message: `An intern has logged in significantly past the allowed shift window (after 7:00 PM IST). A severe late login notice has been sent to the intern.`,
+          policyNote: `Shift hours are 6:30 PM to 10:00 PM. Total late count for ${monthName} is currently ${lateCount}.`
+        });
+
+        await sendEmail({
+          to: DEFAULT_HR_EMAIL,
+          subject: `HR NOTICE: Severe Late Login (After 7:00 PM) - ${internName || internId}`,
+          html: hrHtml
+        });
+
+      } else if (lateCount >= 3) {
+        // ⚠️ 3RD OR SUBSEQUENT LATE ENTRY (6:41 PM - 7:00 PM)
+        const internHtml = buildBrandedEmailHtml({
+          type: 'warning',
+          title: 'Strict Warning: 3rd Late Entry',
+          subtitle: 'Strict Warning - 3rd Late Entry Notice',
+          internName: internName,
+          internId: internId,
+          date: date,
+          time: time,
+          lateCount: lateCount,
+          monthName: monthName,
+          message: `You have checked in late today for the ${lateCount}${lateCount === 3 ? 'rd' : 'th'} time in ${monthName}.`,
+          policyNote: `As per company policy, your 3rd late entry in a calendar month triggers formal HR escalation and strict disciplinary warning. This incident has been reported to HR.`
+        });
+
+        await sendEmail({
+          to: recipient,
+          subject: `STRICT WARNING: 3rd Late Entry Notice - InnerWhispers`,
+          html: internHtml
+        });
+
+        // HR Email: 3rd Late Entry Escalation
+        const hrHtml = buildBrandedEmailHtml({
+          type: 'hr_notice',
+          title: 'HR Escalation: 3rd Late Entry Notice',
+          subtitle: 'HR Escalation Notice (Entry 3/3)',
+          internName: internName,
+          internId: internId,
+          date: date,
+          time: time,
+          lateCount: lateCount,
+          monthName: monthName,
+          message: `Intern <strong>${internName || internId}</strong> has reached ${lateCount} late entries in ${monthName}. A strict warning notice has been dispatched to the intern.`,
+          policyNote: `Intern shift hours are 6:30 PM to 10:00 PM (grace period till 6:40 PM).`
+        });
+
+        await sendEmail({
+          to: DEFAULT_HR_EMAIL,
+          subject: `HR NOTICE: Intern ${internName || internId} - 3rd Late Entry Warning`,
+          html: hrHtml
+        });
+
+      } else {
+        // ℹ️ 1ST OR 2ND LATE ENTRY (6:41 PM - 7:00 PM)
+        const internHtml = buildBrandedEmailHtml({
+          type: 'alert',
+          title: 'Late Entry Notification',
+          subtitle: `Late Entry Alert (Count: ${lateCount}/3)`,
+          internName: internName,
+          internId: internId,
+          date: date,
+          time: time,
+          lateCount: lateCount,
+          monthName: monthName,
+          message: 'Your login today was recorded after the permissible 6:40 PM grace window.',
+          policyNote: `Intern shift timing is 6:30 PM to 10:00 PM (10-minute grace allowed until 6:40 PM). This is your ${lateCount === 1 ? '1st' : '2nd'} late entry for ${monthName}. Reaching 3 late entries in a month will result in formal HR warning & escalation.`
+        });
+
+        await sendEmail({
+          to: recipient,
+          subject: `Late Entry Alert (${lateCount}/3) - ${date}`,
+          html: internHtml
+        });
+      }
+    } catch (emailErr) {
+      console.error("❌ Error sending late attendance email alert:", emailErr);
+    }
+  }
+
+  return { status, isNew: true, time };
+}
+
+/* ------------------------------
    🔐 Security & Middleware
 ------------------------------- */
 app.use(helmet());
@@ -2017,7 +2369,7 @@ app.post("/api/login", async (req, res) => {
 
       // ✅ Get intern details
       const [[intern]] = await executeQuery(
-        "SELECT intern_id FROM Interns WHERE email = ?",
+        "SELECT intern_id, name, email FROM Interns WHERE email = ?",
         [email]
       );
 
@@ -2026,67 +2378,31 @@ app.post("/api/login", async (req, res) => {
       }
 
       const internId = intern.intern_id;
+      const internName = intern.name || user.full_name;
+      const internEmail = intern.email || user.email || email;
       console.log("👤 Intern ID:", internId);
 
       // ============================
       // ⏰ TIME (IST)
       // ============================
       const now = new Date();
-      const istNow = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+      const istOffset = 5.5 * 60 * 60 * 1000;
+      const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+      const istNow = new Date(utc + istOffset);
 
       const date = istNow.toISOString().slice(0, 10);
       const time = istNow.toTimeString().slice(0, 8);
 
-      const currentMinutes = istNow.getHours() * 60 + istNow.getMinutes();
+      // ✅ Process check-in attendance and late email notifications
+      const checkInResult = await processInternCheckIn({
+        internId,
+        internName,
+        internEmail,
+        date,
+        time
+      });
 
-      // 🎯 TIME RULES
-      let status = "Present";
-
-      if (currentMinutes > (18 * 60 + 40)) {
-        status = "Late";
-      }
-
-      if (currentMinutes > (19 * 60)) {
-        status = "Absent";
-      }
-
-      // ============================
-      // ✅ CHECK EXISTING ATTENDANCE
-      // ============================
-      const [[existing]] = await executeQuery(
-        `SELECT id FROM Attendance 
-                 WHERE intern_id = ? AND attendance_date = ?`,
-        [internId, date]
-      );
-
-      if (!existing) {
-        // ✅ INSERT ATTENDANCE
-        const insertResult = await executeQuery(
-          `INSERT INTO Attendance 
-                     (intern_id, attendance_date, status, check_in)
-                     VALUES (?, ?, ?, ?)`,
-          [internId, date, status, time]
-        );
-
-        console.log("✅ Attendance inserted:", status, insertResult);
-
-        // 🔔 REAL-TIME EVENTS (safe)
-        io?.to('hr-dashboard')?.emit('attendance-update', {
-          intern_id: internId,
-          status,
-          time,
-          date
-        });
-
-        io?.to(`intern-${internId}`)?.emit('personal-attendance', {
-          status,
-          time,
-          date
-        });
-
-      } else {
-        console.log("⚠️ Attendance already marked for today");
-      }
+      console.log("✅ Attendance check-in:", checkInResult.status, "isNew:", checkInResult.isNew);
 
       // ============================
       // ✅ TOKEN
@@ -3526,50 +3842,48 @@ app.post('/api/attendance/checkinout', async (req, res) => {
       return res.status(400).json({ error: 'intern_id is required' });
     }
 
-    const today = new Date();
-    const todayStr = today.toISOString().slice(0, 10);
-    const nowTime = today.toTimeString().slice(0, 8);
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const istNow = new Date(utc + istOffset);
+
+    const todayStr = istNow.toISOString().slice(0, 10);
+    const nowTime = istNow.toTimeString().slice(0, 8);
 
     // Check if attendance record exists for today
-    const rows = await new Promise((resolve, reject) => {
-      db.query(
-        'SELECT * FROM Attendance WHERE intern_id = ? AND attendance_date = ?',
-        [intern_id, todayStr],
-        (err, results) => {
-          if (err) reject(err);
-          else resolve(results);
-        }
-      );
-    });
+    const [rows] = await executeQuery(
+      'SELECT * FROM Attendance WHERE intern_id = ? AND attendance_date = ?',
+      [intern_id, todayStr]
+    );
 
-    if (rows.length === 0) {
-      // First check-in: insert record with check_in = now
-      await new Promise((resolve, reject) => {
-        db.query(
-          'INSERT INTO Attendance (intern_id, attendance_date, status, check_in) VALUES (?, ?, ?, ?)',
-          [intern_id, todayStr, 'Present', nowTime],
-          (err, results) => {
-            if (err) reject(err);
-            else resolve(results);
-          }
-        );
+    if (!rows || rows.length === 0) {
+      // First check-in: fetch intern details for email notifications
+      const [internRows] = await executeQuery(
+        'SELECT intern_id, name, email FROM Interns WHERE intern_id = ?',
+        [intern_id]
+      );
+      const intern = (internRows && internRows[0]) ? internRows[0] : null;
+      const internName = intern ? intern.name : '';
+      const internEmail = intern ? intern.email : '';
+
+      const checkInResult = await processInternCheckIn({
+        internId: intern_id,
+        internName,
+        internEmail,
+        date: todayStr,
+        time: nowTime
       });
-      return res.json({ action: 'checkin', checkIn: nowTime, checkOut: null });
+
+      return res.json({ action: 'checkin', checkIn: nowTime, checkOut: null, status: checkInResult.status });
     } else {
       const attendance = rows[0];
 
       if (!attendance.check_out) {
         // Check-out: update record with check_out = now
-        await new Promise((resolve, reject) => {
-          db.query(
-            'UPDATE Attendance SET check_out = ? WHERE id = ?',
-            [nowTime, attendance.id],
-            (err, results) => {
-              if (err) reject(err);
-              else resolve(results);
-            }
-          );
-        });
+        await executeQuery(
+          'UPDATE Attendance SET check_out = ? WHERE id = ?',
+          [nowTime, attendance.id]
+        );
         return res.json({ action: 'checkout', checkIn: attendance.check_in, checkOut: nowTime });
       } else {
         // Already checked out today
