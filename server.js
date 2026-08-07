@@ -296,11 +296,19 @@ async function processInternCheckIn({ internId, internName, internEmail, date, t
     return { status: existing.status, isNew: false, time: existing.check_in };
   }
 
-  // 2. Insert new Attendance record
-  await executeQuery(
-    `INSERT INTO Attendance (intern_id, attendance_date, status, check_in) VALUES (?, ?, ?, ?)`,
-    [internId, date, status, time]
-  );
+  // 2. Insert new Attendance record (with concurrency duplicate key protection)
+  try {
+    await executeQuery(
+      `INSERT INTO Attendance (intern_id, attendance_date, status, check_in) VALUES (?, ?, ?, ?)`,
+      [internId, date, status, time]
+    );
+  } catch (insertErr) {
+    if (insertErr.code === 'ER_DUP_ENTRY' || (insertErr.message && insertErr.message.includes('duplicate'))) {
+      console.warn(`⚠️ Attendance already recorded for intern ${internId} on ${date}. Skipping duplicate email notification.`);
+      return { status, isNew: false, time };
+    }
+    throw insertErr;
+  }
 
   // 🔔 Emit Socket.IO events safely
   try {
@@ -1275,7 +1283,8 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     const queries = [
       `ALTER TABLE Attendance ADD COLUMN hours_worked DECIMAL(4,2) DEFAULT 0.00`,
       `ALTER TABLE Attendance ADD COLUMN note TEXT`,
-      `ALTER TABLE Attendance MODIFY COLUMN status ENUM('Present','Absent','Leave','Late') DEFAULT 'Absent`
+      `ALTER TABLE Attendance MODIFY COLUMN status ENUM('Present','Absent','Leave','Late') DEFAULT 'Absent'`,
+      `ALTER TABLE Attendance ADD UNIQUE KEY unique_intern_date (intern_id, attendance_date)`
     ];
 
     for (let q of queries) {
