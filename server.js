@@ -108,161 +108,44 @@ async function sendEmail({ to, subject, html, text }) {
 }
 
 /* ------------------------------
-   🎨 InnerWhispers Brand HTML Email Template Builder
+   ✉️ Clean Corporate Plain Text Email Builder
 ------------------------------- */
-function buildBrandedEmailHtml({ type, title, subtitle, internName, internId, date, time, lateCount, monthName, message, policyNote }) {
-  let accentColor = '#0284C7';
-  let badgeBg = '#E0F2FE';
-  let badgeText = '#0369A1';
-  let borderTopColor = '#0284C7';
-  let iconEmoji = '⏰';
-
-  if (type === 'warning') {
-    accentColor = '#D97706';
-    badgeBg = '#FEF3C7';
-    badgeText = '#92400E';
-    borderTopColor = '#F59E0B';
-    iconEmoji = '⚠️';
-  } else if (type === 'severe') {
-    accentColor = '#DC2626';
-    badgeBg = '#FEE2E2';
-    badgeText = '#991B1B';
-    borderTopColor = '#EF4444';
-    iconEmoji = '🚨';
-  } else if (type === 'hr_notice') {
-    accentColor = '#4338CA';
-    badgeBg = '#E0E7FF';
-    badgeText = '#3730A3';
-    borderTopColor = '#6366F1';
-    iconEmoji = '📋';
-  }
-
+function buildPlainTextEmailHtml({ title, internName, internId, date, time, lateCount, monthName, message, policyNote, recipientType = 'intern' }) {
+  const isHR = recipientType === 'hr';
+  
   return `
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${title}</title>
+  <meta charset="utf-8">
 </head>
-<body style="margin: 0; padding: 0; background-color: #F4F7F9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #F4F7F9; padding: 30px 15px;">
-    <tr>
-      <td align="center">
-        <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 600px; background-color: #FFFFFF; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);">
-          
-          <!-- BRAND HEADER (Light background for clear logo visibility) -->
-          <tr>
-            <td style="background-color: #FFFFFF; padding: 22px 28px; text-align: left; border-bottom: 1px solid #F1F5F9;">
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td align="left" style="vertical-align: middle;">
-                    <img src="https://innerwhispers.in/images/innerwhispers-logo-removebg-preview.png" alt="InnerWhispers Wellness" style="height: 52px; max-width: 220px; display: block; border: 0;" />
-                  </td>
-                  <td align="right" style="vertical-align: middle; color: #0F2C59; font-size: 14px; font-weight: 700; letter-spacing: 0.3px;">
-                    InnerWhispers Wellness LLP
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
+<body style="font-family: Arial, Helvetica, sans-serif; font-size: 15px; line-height: 1.6; color: #222222; margin: 0; padding: 20px; background-color: #ffffff;">
+  <div style="max-width: 650px; margin: 0; padding: 0;">
+    
+    <p>Dear ${isHR ? 'HR Team' : (internName ? `<strong>${internName}</strong>` : 'Intern')},</p>
+    
+    <p>${message}</p>
+    
+    <p><strong>Attendance Record Details:</strong></p>
+    <ul style="margin: 10px 0 16px 0; padding-left: 20px;">
+      <li><strong>Intern Name:</strong> ${internName || 'N/A'} ${internId ? `(${internId})` : ''}</li>
+      <li><strong>Check-in Date & Time:</strong> ${date} at ${time} IST</li>
+      <li><strong>Official Shift Timings:</strong> 6:30 PM to 10:00 PM (10-minute grace window till 6:40 PM)</li>
+      <li><strong>Monthly Late Count (${monthName}):</strong> ${lateCount}</li>
+    </ul>
 
-          <!-- COLOR ACCENT STRIP -->
-          <tr>
-            <td style="background-color: ${borderTopColor}; height: 4px; font-size: 0; line-height: 0;">&nbsp;</td>
-          </tr>
+    <p>${policyNote}</p>
+    
+    <br />
+    <p style="margin-bottom: 4px;">Best regards,</p>
+    <p style="margin-top: 0; margin-bottom: 4px;"><strong>Human Resources Department</strong></p>
+    <p style="margin-top: 0; color: #555555; font-size: 13px;">
+      InnerWhispers Wellness LLP<br />
+      Email: <a href="mailto:hr.interns.innerwhispers@gmail.com" style="color: #0056b3;">hr.interns.innerwhispers@gmail.com</a><br />
+      Website: <a href="https://innerwhispers.in/" style="color: #0056b3;">https://innerwhispers.in/</a>
+    </p>
 
-          <!-- CONTENT BODY -->
-          <tr>
-            <td style="padding: 32px 30px 24px 30px;">
-              
-              <!-- BADGE -->
-              <div style="display: inline-block; background-color: ${badgeBg}; color: ${badgeText}; font-size: 12px; font-weight: 700; padding: 6px 14px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 16px;">
-                ${iconEmoji} ${subtitle}
-              </div>
-
-              <!-- MAIN TITLE -->
-              <h1 style="color: #0F172A; font-size: 22px; font-weight: 700; margin: 0 0 16px 0; line-height: 1.3;">
-                ${title}
-              </h1>
-
-              <p style="color: #475569; font-size: 15px; line-height: 1.6; margin: 0 0 20px 0;">
-                Hello <strong>${internName || 'Intern'}</strong>,
-              </p>
-
-              <p style="color: #475569; font-size: 15px; line-height: 1.6; margin: 0 0 24px 0;">
-                ${message}
-              </p>
-
-              <!-- DETAILS TABLE -->
-              <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; margin-bottom: 24px;">
-                <tr>
-                  <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0; width: 40%; color: #64748B; font-size: 13px; font-weight: 600;">
-                    Intern ID & Name
-                  </td>
-                  <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0; color: #0F172A; font-size: 14px; font-weight: 600;">
-                    ${internName || 'N/A'} <span style="color: #64748B; font-weight: 400;">(${internId})</span>
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0; color: #64748B; font-size: 13px; font-weight: 600;">
-                    Check-in Date & Time
-                  </td>
-                  <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0; color: #0F172A; font-size: 14px; font-weight: 600;">
-                    ${date} at ${time} IST
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0; color: #64748B; font-size: 13px; font-weight: 600;">
-                    Shift Timings
-                  </td>
-                  <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0; color: #0F172A; font-size: 14px;">
-                    6:30 PM – 10:00 PM <span style="color: #64748B; font-size: 12px;">(Grace period till 6:40 PM)</span>
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding: 14px 18px; color: #64748B; font-size: 13px; font-weight: 600;">
-                    Monthly Late Count (${monthName})
-                  </td>
-                  <td style="padding: 14px 18px; color: ${accentColor}; font-size: 14px; font-weight: 700;">
-                    ${lateCount} Late ${lateCount === 1 ? 'Entry' : 'Entries'}
-                  </td>
-                </tr>
-              </table>
-
-              <!-- POLICY CALLOUT BOX -->
-              <div style="background-color: ${badgeBg}; border-left: 4px solid ${borderTopColor}; padding: 16px; border-radius: 4px; margin-bottom: 24px;">
-                <p style="margin: 0; color: ${badgeText}; font-size: 14px; line-height: 1.5;">
-                  <strong>Policy Notice:</strong> ${policyNote}
-                </p>
-              </div>
-
-              <!-- BUTTON -->
-              <div style="text-align: center; margin-top: 28px; margin-bottom: 10px;">
-                <a href="https://innerwhispers.in/" target="_blank" style="background-color: #0F2C59; color: #FFFFFF; text-decoration: none; padding: 12px 28px; border-radius: 6px; font-size: 14px; font-weight: 600; display: inline-block;">
-                  Visit InnerWhispers Portal
-                </a>
-              </div>
-
-            </td>
-          </tr>
-
-          <!-- FOOTER -->
-          <tr>
-            <td style="background-color: #F1F5F9; padding: 20px 30px; text-align: center; border-top: 1px solid #E2E8F0;">
-              <p style="margin: 0 0 6px 0; color: #64748B; font-size: 13px; font-weight: 600;">
-                InnerWhispers Wellness LLP
-              </p>
-              <p style="margin: 0; color: #94A3B8; font-size: 12px;">
-                This is an official system notification. For assistance, contact <a href="mailto:hr.interns.innerwhispers@gmail.com" style="color: #0284C7; text-decoration: none;">hr.interns.innerwhispers@gmail.com</a>.
-              </p>
-            </td>
-          </tr>
-
-        </table>
-      </td>
-    </tr>
-  </table>
+  </div>
 </body>
 </html>
   `;
@@ -353,18 +236,17 @@ async function processInternCheckIn({ internId, internName, internEmail, date, t
 
       if (isSevereLate) {
         // 🚨 SEVERE LATE (7:01 PM - 10:00 PM+)
-        const internHtml = buildBrandedEmailHtml({
-          type: 'severe',
-          title: 'Severe Late Login Notice',
-          subtitle: 'Critical Policy Violation (After 7:00 PM)',
+        const internHtml = buildPlainTextEmailHtml({
+          title: 'STRICT WARNING: Severe Late Login Notice',
           internName: internName,
           internId: internId,
           date: date,
           time: time,
           lateCount: lateCount,
           monthName: monthName,
-          message: 'Your login today was recorded significantly past the allowed shift start window (after 7:00 PM IST).',
-          policyNote: 'Logging in after 7:00 PM is strictly prohibited. Official shift hours are 6:30 PM to 10:00 PM. A formal warning notice has been issued and escalated directly to Human Resources (HR).'
+          message: 'This email is a formal strict warning regarding your check-in today, which was recorded significantly past the allowed shift start window (after 7:00 PM IST).',
+          policyNote: 'Logging in after 7:00 PM is a critical policy violation. Official shift hours are 6:30 PM to 10:00 PM (with a 10-minute grace window until 6:40 PM). A strict warning notice has been logged against your intern profile and reported directly to Human Resources (HR).',
+          recipientType: 'intern'
         });
 
         await sendEmail({
@@ -374,18 +256,17 @@ async function processInternCheckIn({ internId, internName, internEmail, date, t
         });
 
         // HR Email: Incident Report
-        const hrHtml = buildBrandedEmailHtml({
-          type: 'hr_notice',
+        const hrHtml = buildPlainTextEmailHtml({
           title: 'HR Incident Report: Severe Late Login',
-          subtitle: 'HR Incident Alert (After 7:00 PM IST)',
           internName: internName,
           internId: internId,
           date: date,
           time: time,
           lateCount: lateCount,
           monthName: monthName,
-          message: `An intern has logged in significantly past the allowed shift window (after 7:00 PM IST). A severe late login notice has been sent to the intern.`,
-          policyNote: `Shift hours are 6:30 PM to 10:00 PM. Total late count for ${monthName} is currently ${lateCount}.`
+          message: `An intern has logged in significantly past the allowed shift window (after 7:00 PM IST). A severe late login warning notice has been dispatched to the intern.`,
+          policyNote: `Please review this intern's attendance record if further administrative action is required.`,
+          recipientType: 'hr'
         });
 
         await sendEmail({
@@ -396,18 +277,17 @@ async function processInternCheckIn({ internId, internName, internEmail, date, t
 
       } else if (lateCount >= 3) {
         // ⚠️ 3RD OR SUBSEQUENT LATE ENTRY (6:41 PM - 7:00 PM)
-        const internHtml = buildBrandedEmailHtml({
-          type: 'warning',
-          title: 'Strict Warning: 3rd Late Entry',
-          subtitle: 'Strict Warning - 3rd Late Entry Notice',
+        const internHtml = buildPlainTextEmailHtml({
+          title: 'STRICT WARNING: 3rd Late Entry Notice',
           internName: internName,
           internId: internId,
           date: date,
           time: time,
           lateCount: lateCount,
           monthName: monthName,
-          message: `You have checked in late today for the ${lateCount}${lateCount === 3 ? 'rd' : 'th'} time in ${monthName}.`,
-          policyNote: `As per company policy, your 3rd late entry in a calendar month triggers formal HR escalation and strict disciplinary warning. This incident has been reported to HR.`
+          message: `This email is a formal warning notice regarding your attendance. You have checked in late today for the ${lateCount}${lateCount === 3 ? 'rd' : 'th'} time in ${monthName}.`,
+          policyNote: `As per company policy, your 3rd late entry in a calendar month triggers formal HR escalation and strict disciplinary warning. This incident has been escalated to HR.`,
+          recipientType: 'intern'
         });
 
         await sendEmail({
@@ -417,18 +297,17 @@ async function processInternCheckIn({ internId, internName, internEmail, date, t
         });
 
         // HR Email: 3rd Late Entry Escalation
-        const hrHtml = buildBrandedEmailHtml({
-          type: 'hr_notice',
+        const hrHtml = buildPlainTextEmailHtml({
           title: 'HR Escalation: 3rd Late Entry Notice',
-          subtitle: 'HR Escalation Notice (Entry 3/3)',
           internName: internName,
           internId: internId,
           date: date,
           time: time,
           lateCount: lateCount,
           monthName: monthName,
-          message: `Intern <strong>${internName || internId}</strong> has reached ${lateCount} late entries in ${monthName}. A strict warning notice has been dispatched to the intern.`,
-          policyNote: `Intern shift hours are 6:30 PM to 10:00 PM (grace period till 6:40 PM).`
+          message: `Intern <strong>${internName || internId}</strong> has reached ${lateCount} late entries in ${monthName}. A formal 3rd late warning notice has been dispatched to the intern.`,
+          policyNote: `Intern shift hours are 6:30 PM to 10:00 PM (grace period till 6:40 PM).`,
+          recipientType: 'hr'
         });
 
         await sendEmail({
@@ -439,18 +318,17 @@ async function processInternCheckIn({ internId, internName, internEmail, date, t
 
       } else {
         // ℹ️ 1ST OR 2ND LATE ENTRY (6:41 PM - 7:00 PM)
-        const internHtml = buildBrandedEmailHtml({
-          type: 'alert',
+        const internHtml = buildPlainTextEmailHtml({
           title: 'Late Entry Notification',
-          subtitle: `Late Entry Alert (Count: ${lateCount}/3)`,
           internName: internName,
           internId: internId,
           date: date,
           time: time,
           lateCount: lateCount,
           monthName: monthName,
-          message: 'Your login today was recorded after the permissible 6:40 PM grace window.',
-          policyNote: `Intern shift timing is 6:30 PM to 10:00 PM (10-minute grace allowed until 6:40 PM). This is your ${lateCount === 1 ? '1st' : '2nd'} late entry for ${monthName}. Reaching 3 late entries in a month will result in formal HR warning & escalation.`
+          message: 'This email is to notify you that your check-in today was recorded after the permissible 6:40 PM grace window.',
+          policyNote: `Intern shift timing is 6:30 PM to 10:00 PM (10-minute grace allowed until 6:40 PM). This is your ${lateCount === 1 ? '1st' : '2nd'} late entry for ${monthName}. Reaching 3 late entries in a month will result in formal HR warning & escalation. Please ensure timely check-in for upcoming shifts.`,
+          recipientType: 'intern'
         });
 
         await sendEmail({
@@ -4144,58 +4022,45 @@ app.post('/api/leave-requests', async (req, res) => {
     // Send email notification to HR
     const hrSubject = `New Leave Application: ${internDetails.name || intern_id} (${typeVal})`;
     const hrHtml = `
-        <div style="font-family: 'DM Sans', Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
-          <div style="background: #1e1b4b; padding: 24px; text-align: center; color: #ffffff;">
-            <h2 style="margin: 0; font-size: 20px; font-weight: 700;">InnerWhispers HR Notification</h2>
-            <p style="margin: 6px 0 0 0; font-size: 14px; opacity: 0.85;">New Intern Leave Request Received</p>
-          </div>
-          <div style="padding: 24px; color: #334155;">
-            <p style="font-size: 15px; margin-top: 0;">Hello HR Team,</p>
-            <p style="font-size: 14px; line-height: 1.6;">An intern has submitted a new leave application. Please review the application details below:</p>
-            
-            <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 18px; margin: 18px 0;">
-              <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-                <tr>
-                  <td style="padding: 6px 0; color: #64748b; font-weight: 600; width: 140px;">Intern Name:</td>
-                  <td style="padding: 6px 0; color: #0f172a; font-weight: 700;">${internDetails.name || 'N/A'}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 6px 0; color: #64748b; font-weight: 600;">Intern ID:</td>
-                  <td style="padding: 6px 0; color: #0f172a; font-mono">${intern_id}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 6px 0; color: #64748b; font-weight: 600;">Department/Role:</td>
-                  <td style="padding: 6px 0; color: #0f172a;">${internDetails.department || internDetails.internrole || 'N/A'}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 6px 0; color: #64748b; font-weight: 600;">Intern Email:</td>
-                  <td style="padding: 6px 0; color: #0f172a;"><a href="mailto:${internDetails.email}" style="color: #4f46e5;">${internDetails.email || 'N/A'}</a></td>
-                </tr>
-                ${internDetails.phone ? `<tr><td style="padding: 6px 0; color: #64748b; font-weight: 600;">Phone:</td><td style="padding: 6px 0; color: #0f172a;">${internDetails.phone}</td></tr>` : ''}
-                <tr>
-                  <td style="padding: 6px 0; color: #64748b; font-weight: 600;">Leave Type:</td>
-                  <td style="padding: 6px 0; color: #0f172a;"><span style="background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 12px;">${typeVal}</span></td>
-                </tr>
-                <tr>
-                  <td style="padding: 6px 0; color: #64748b; font-weight: 600;">Dates:</td>
-                  <td style="padding: 6px 0; color: #0f172a;">${from_date} &rarr; ${to_date} (<strong>${number_of_working_days} day(s)</strong>)</td>
-                </tr>
-                <tr>
-                  <td style="padding: 6px 0; color: #64748b; font-weight: 600; vertical-align: top;">Reason:</td>
-                  <td style="padding: 6px 0; color: #0f172a; line-height: 1.5;">${reason}</td>
-                </tr>
-                ${reporting_lead ? `<tr><td style="padding: 6px 0; color: #64748b; font-weight: 600;">Reporting Lead:</td><td style="padding: 6px 0; color: #0f172a;">${reporting_lead}</td></tr>` : ''}
-                ${handover_note ? `<tr><td style="padding: 6px 0; color: #64748b; font-weight: 600;">Handover Note:</td><td style="padding: 6px 0; color: #0f172a;">${handover_note}</td></tr>` : ''}
-              </table>
-            </div>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+</head>
+<body style="font-family: Arial, Helvetica, sans-serif; font-size: 15px; line-height: 1.6; color: #222222; margin: 0; padding: 20px; background-color: #ffffff;">
+  <div style="max-width: 650px; margin: 0; padding: 0;">
+    
+    <p>Dear <strong>HR Team</strong>,</p>
+    
+    <p>A new leave application has been submitted by <strong>${internDetails.name || 'Intern'}</strong> (${intern_id}).</p>
+    
+    <p><strong>Leave Application Details:</strong></p>
+    <ul style="margin: 10px 0 16px 0; padding-left: 20px;">
+      <li><strong>Intern Name:</strong> ${internDetails.name || 'N/A'} (${intern_id})</li>
+      <li><strong>Department/Role:</strong> ${internDetails.department || internDetails.internrole || 'N/A'}</li>
+      <li><strong>Intern Email:</strong> ${internDetails.email || 'N/A'}</li>
+      ${internDetails.phone ? `<li><strong>Phone:</strong> ${internDetails.phone}</li>` : ''}
+      <li><strong>Leave Type:</strong> ${typeVal}</li>
+      <li><strong>Duration / Dates:</strong> ${from_date} to ${to_date} (${number_of_working_days} day(s))</li>
+      <li><strong>Reason:</strong> ${reason}</li>
+      ${reporting_lead ? `<li><strong>Reporting Lead:</strong> ${reporting_lead}</li>` : ''}
+      ${handover_note ? `<li><strong>Handover Note:</strong> ${handover_note}</li>` : ''}
+    </ul>
 
-            <p style="font-size: 13px; color: #64748b;">Log in to the HR Dashboard to view and respond to this request.</p>
-          </div>
-          <div style="background: #f1f5f9; padding: 14px; text-align: center; font-size: 12px; color: #64748b; border-top: 1px solid #e2e8f0;">
-            &copy; InnerWhispers Wellness LLP. All rights reserved.
-          </div>
-        </div>
-      `;
+    <p>Please log in to the HR Dashboard to review and respond to this request.</p>
+    
+    <br />
+    <p style="margin-bottom: 4px;">Best regards,</p>
+    <p style="margin-top: 0; margin-bottom: 4px;"><strong>InnerWhispers Leave Management System</strong></p>
+    <p style="margin-top: 0; color: #555555; font-size: 13px;">
+      InnerWhispers Wellness LLP<br />
+      Website: <a href="https://innerwhispers.in/" style="color: #0056b3;">https://innerwhispers.in/</a>
+    </p>
+
+  </div>
+</body>
+</html>
+    `;
 
     sendEmail({ to: DEFAULT_HR_EMAIL, subject: hrSubject, html: hrHtml });
 
@@ -4307,52 +4172,42 @@ app.put('/api/leave-requests/:id/status', async (req, res) => {
 
           const subject = `Leave Request ${status}: ${leave.leave_type || 'Leave'} (${leave.from_date} to ${leave.to_date})`;
           const html = `
-              <div style="font-family: 'DM Sans', Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
-                <div style="background: ${isApproved ? '#065f46' : '#991b1b'}; padding: 24px; text-align: center; color: #ffffff;">
-                  <h2 style="margin: 0; font-size: 20px; font-weight: 700;">Leave Request ${status.toUpperCase()}</h2>
-                  <p style="margin: 6px 0 0 0; font-size: 14px; opacity: 0.9;">InnerWhispers HR Decision Notification</p>
-                </div>
-                <div style="padding: 24px; color: #334155;">
-                  <p style="font-size: 15px; margin-top: 0;">Dear <strong>${internName}</strong>,</p>
-                  <p style="font-size: 14px; line-height: 1.6;">
-                    Your leave request has been reviewed by the HR team and marked as 
-                    <span style="background: ${badgeBg}; color: ${badgeColor}; padding: 3px 10px; border-radius: 6px; font-weight: 700; font-size: 13px;">${status.toUpperCase()}</span>.
-                  </p>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+</head>
+<body style="font-family: Arial, Helvetica, sans-serif; font-size: 15px; line-height: 1.6; color: #222222; margin: 0; padding: 20px; background-color: #ffffff;">
+  <div style="max-width: 650px; margin: 0; padding: 0;">
+    
+    <p>Dear <strong>${internName}</strong>,</p>
+    
+    <p>Your leave request has been reviewed by the HR team and marked as <strong>${status.toUpperCase()}</strong>.</p>
+    
+    <p><strong>Leave Application Details:</strong></p>
+    <ul style="margin: 10px 0 16px 0; padding-left: 20px;">
+      <li><strong>Leave Type:</strong> ${leave.leave_type || 'Casual Leave'}</li>
+      <li><strong>Duration / Dates:</strong> ${leave.from_date} to ${leave.to_date} (${leave.number_of_working_days} day(s))</li>
+      <li><strong>Reason:</strong> ${leave.reason || '—'}</li>
+      <li><strong>Status:</strong> ${status}</li>
+      ${remarksVal ? `<li><strong>HR Remarks:</strong> ${remarksVal}</li>` : ''}
+    </ul>
 
-                  <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 18px; margin: 18px 0;">
-                    <h4 style="margin: 0 0 12px 0; color: #0f172a; font-size: 14px; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px;">Application Details</h4>
-                    <table style="width: 100%; border-collapse: collapse; font-size: 13.5px;">
-                      <tr>
-                        <td style="padding: 5px 0; color: #64748b; font-weight: 600; width: 140px;">Leave Type:</td>
-                        <td style="padding: 5px 0; color: #0f172a; font-weight: 600;">${leave.leave_type || 'Casual'}</td>
-                      </tr>
-                      <tr>
-                        <td style="padding: 5px 0; color: #64748b; font-weight: 600;">Dates:</td>
-                        <td style="padding: 5px 0; color: #0f172a;">${leave.from_date} &rarr; ${leave.to_date} (${leave.number_of_working_days} day(s))</td>
-                      </tr>
-                      <tr>
-                        <td style="padding: 5px 0; color: #64748b; font-weight: 600;">Reason:</td>
-                        <td style="padding: 5px 0; color: #0f172a;">${leave.reason || '—'}</td>
-                      </tr>
-                      ${remarksVal ? `
-                      <tr>
-                        <td style="padding: 8px 0 5px 0; color: #64748b; font-weight: 600; vertical-align: top;">HR Remarks:</td>
-                        <td style="padding: 8px 0 5px 0; color: #0f172a; font-weight: 600; background: #fffbe6; padding: 8px; border-radius: 6px; border: 1px solid #ffe58f;">${remarksVal}</td>
-                      </tr>
-                      ` : ''}
-                    </table>
-                  </div>
+    <p>If you have any questions regarding this decision, please feel free to reply to this email or contact the HR team at <a href="mailto:${DEFAULT_HR_EMAIL}" style="color: #0056b3;">${DEFAULT_HR_EMAIL}</a>.</p>
+    
+    <br />
+    <p style="margin-bottom: 4px;">Best regards,</p>
+    <p style="margin-top: 0; margin-bottom: 4px;"><strong>Human Resources Department</strong></p>
+    <p style="margin-top: 0; color: #555555; font-size: 13px;">
+      InnerWhispers Wellness LLP<br />
+      Email: <a href="mailto:${DEFAULT_HR_EMAIL}" style="color: #0056b3;">${DEFAULT_HR_EMAIL}</a><br />
+      Website: <a href="https://innerwhispers.in/" style="color: #0056b3;">https://innerwhispers.in/</a>
+    </p>
 
-                  <p style="font-size: 13px; color: #64748b; line-height: 1.5;">
-                    If you have any questions regarding this decision, please feel free to reply to this email or contact the HR team at 
-                    <a href="mailto:${DEFAULT_HR_EMAIL}" style="color: #4f46e5;">${DEFAULT_HR_EMAIL}</a>.
-                  </p>
-                </div>
-                <div style="background: #f1f5f9; padding: 14px; text-align: center; font-size: 12px; color: #64748b; border-top: 1px solid #e2e8f0;">
-                  &copy; InnerWhispers Wellness LLP &bull; HR Management Team
-                </div>
-              </div>
-            `;
+  </div>
+</body>
+</html>
+          `;
 
           sendEmail({ to: internEmail, subject, html });
         } else {
