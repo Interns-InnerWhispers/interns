@@ -1110,23 +1110,24 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     }
   });
   async function updateInternsTable() {
-    try {
-      await db.query(`
-            ALTER TABLE Interns
-            ADD COLUMN department VARCHAR(50),
-            ADD COLUMN HR_id INT,
-            ADD COLUMN Team_id INT,
-            ADD COLUMN attendance_percentage DECIMAL(5,2) DEFAULT 0.00,
-            ADD COLUMN profile_image VARCHAR(255),
-            ADD COLUMN status ENUM('Active', 'Inactive', 'Completed') DEFAULT 'Active',
-            ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        `);
-
-      console.log("✅ Interns table updated successfully");
-    } catch (err) {
-      console.error("❌ Update Error:", err.message);
+    const columns = [
+      `ALTER TABLE Interns ADD COLUMN IF NOT EXISTS department VARCHAR(50)`,
+      `ALTER TABLE Interns ADD COLUMN IF NOT EXISTS HR_id INT`,
+      `ALTER TABLE Interns ADD COLUMN IF NOT EXISTS Team_id INT`,
+      `ALTER TABLE Interns ADD COLUMN IF NOT EXISTS attendance_percentage DECIMAL(5,2) DEFAULT 0.00`,
+      `ALTER TABLE Interns ADD COLUMN IF NOT EXISTS profile_image VARCHAR(255)`,
+      `ALTER TABLE Interns ADD COLUMN IF NOT EXISTS status ENUM('Active', 'Inactive', 'Completed') DEFAULT 'Active'`,
+      `ALTER TABLE Interns ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+      `ALTER TABLE Interns ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`
+    ];
+    for (const q of columns) {
+      try {
+        await db.promise().query(q);
+      } catch (err) {
+        // ignore duplicate column error if thrown by older MySQL versions
+      }
     }
+    console.log("✅ Interns table updated successfully");
   }
   updateInternsTable();
   // Add foreign key constraints for Interns table
@@ -1154,20 +1155,20 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
 
   db.query(createAttendenceTable, (err) => {
     if (err) {
-      console.error('Error creating prescriptions table:', err);
+      console.error('Error creating attendance table:', err);
     }
   });
   async function UpdateAttendanceTable() {
     const queries = [
-      `ALTER TABLE Attendance ADD COLUMN hours_worked DECIMAL(4,2) DEFAULT 0.00`,
-      `ALTER TABLE Attendance ADD COLUMN note TEXT`,
+      `ALTER TABLE Attendance ADD COLUMN IF NOT EXISTS hours_worked DECIMAL(4,2) DEFAULT 0.00`,
+      `ALTER TABLE Attendance ADD COLUMN IF NOT EXISTS note TEXT`,
       `ALTER TABLE Attendance MODIFY COLUMN status ENUM('Present','Absent','Leave','Late') DEFAULT 'Absent'`,
       `ALTER TABLE Attendance ADD UNIQUE KEY unique_intern_date (intern_id, attendance_date)`
     ];
 
     for (let q of queries) {
       try {
-        await db.query(q);
+        await db.promise().query(q);
       } catch (e) { }
     }
 
@@ -1204,16 +1205,16 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
   async function UpdateReportsTable() {
     const queries = [
       `ALTER TABLE Reports ADD COLUMN IF NOT EXISTS report_type ENUM('wednesday', 'saturday') DEFAULT 'wednesday'`,
-      `ALTER TABLE Reports ADD COLUMN submission_date DATE`,
-      `ALTER TABLE Reports ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
-      `ALTER TABLE Reports ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`,
+      `ALTER TABLE Reports ADD COLUMN IF NOT EXISTS submission_date DATE`,
+      `ALTER TABLE Reports ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+      `ALTER TABLE Reports ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`,
       `ALTER TABLE Reports MODIFY COLUMN status ENUM('Pending','Reviewed','Rejected','Submitted') DEFAULT 'Submitted'`,
       `UPDATE Reports SET report_type = CASE WHEN DAYOFWEEK(submitted_at) IN (3, 4, 5) THEN 'wednesday' ELSE 'saturday' END WHERE report_type IS NULL OR report_type = 'wednesday' OR report_type = 'weekly'`
     ];
 
     for (let q of queries) {
       try {
-        await db.query(q);
+        await db.promise().query(q);
       } catch (e) { }
     }
 
@@ -1229,10 +1230,14 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     week_start_date DATE NOT NULL,
     wednesday_status ENUM('Submitted', 'Missing') DEFAULT 'Missing',
     saturday_status ENUM('Submitted', 'Missing') DEFAULT 'Missing',
+    wednesday_report_id INT NULL,
+    saturday_report_id INT NULL,
     last_submission_date DATE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (intern_id) REFERENCES Interns(intern_id),
+    FOREIGN KEY (wednesday_report_id) REFERENCES Reports(id) ON DELETE SET NULL,
+    FOREIGN KEY (saturday_report_id) REFERENCES Reports(id) ON DELETE SET NULL,
     UNIQUE KEY unique_intern_week (intern_id, week_start_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -1244,29 +1249,21 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     } else {
       console.log('✅ Weekly reports table created successfully');
 
+      // Safely ensure migration columns exist if table was previously created with older schema
+      const migrationQueries = [
+        `ALTER TABLE weekly_reports ADD COLUMN IF NOT EXISTS wednesday_report_id INT NULL`,
+        `ALTER TABLE weekly_reports ADD COLUMN IF NOT EXISTS saturday_report_id INT NULL`
+      ];
+      for (const migQ of migrationQueries) {
+        db.query(migQ, () => {});
+      }
+
       // After table creation, populate it with all existing interns
       const currentWeekStart = new Date();
       const dayOfWeek = currentWeekStart.getDay();
       const diff = currentWeekStart.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
       currentWeekStart.setDate(diff);
       const weekStartDate = currentWeekStart.toISOString().split('T')[0];
-      const sql = `
-      ALTER TABLE weekly_reports 
-      ADD COLUMN wednesday_report_id INT NULL,
-      ADD COLUMN saturday_report_id INT NULL,
-      ADD CONSTRAINT fk_wednesday_report 
-        FOREIGN KEY (wednesday_report_id) REFERENCES Reports(id) ON DELETE SET NULL,
-      ADD CONSTRAINT fk_saturday_report 
-        FOREIGN KEY (saturday_report_id) REFERENCES Reports(id) ON DELETE SET NULL;
-    `;
-
-      db.query(sql, (err, result) => {
-        if (err) {
-          console.error('Error adding columns to weekly reports table:', err);
-        } else {
-          console.log('✅ Columns and foreign keys added successfully');
-        }
-      });
 
       // Query to insert all existing interns into weekly_reports table
       const populateWeeklyReports = `
@@ -1287,7 +1284,7 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
         if (err) {
           console.error('Error populating weekly reports table:', err);
         } else {
-          console.log(`✅ Weekly reports table populated with ${result.affectedRows} interns`);
+          console.log(`✅ Weekly reports table populated with ${result ? result.affectedRows : 0} interns`);
         }
       });
     }
@@ -1318,7 +1315,7 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
 
   db.query(createDocumentsTable, (err) => {
     if (err) {
-      console.error('Error creating prescriptions table:', err);
+      console.error('Error creating documents table:', err);
     }
   });
   // Ensure missing columns exist (safety for older schema)
@@ -1327,16 +1324,16 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
 
   async function UpdateDocumentsTable() {
     const queries = [
-      `ALTER TABLE Documents ADD COLUMN file_size INT`,
-      `ALTER TABLE Documents ADD COLUMN category VARCHAR(50) DEFAULT 'General'`,
-      `ALTER TABLE Documents ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
-      `ALTER TABLE Documents ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`,
+      `ALTER TABLE Documents ADD COLUMN IF NOT EXISTS file_size INT`,
+      `ALTER TABLE Documents ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'General'`,
+      `ALTER TABLE Documents ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+      `ALTER TABLE Documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`,
       `ALTER TABLE Documents MODIFY COLUMN uploaded_by ENUM('Intern','HR','Lead') DEFAULT 'Intern'`
     ];
 
     for (let q of queries) {
       try {
-        await db.query(q);
+        await db.promise().query(q);
       } catch (e) { }
     }
 
