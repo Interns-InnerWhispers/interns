@@ -796,7 +796,7 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
     const [thisWeekData] = await executeQuery(`
             SELECT 
                 DAYNAME(attendance_date) as day_name,
-                COUNT(CASE WHEN status = 'Present' THEN 1 END) * 100.0 / COUNT(*) as attendance_rate
+                SUM(status IN ('Present','Late')) * 100.0 / NULLIF(SUM(status IN ('Present','Late','Absent')), 0) as attendance_rate   -- late counts as attended; leave is excused
             FROM Attendance 
             WHERE attendance_date BETWEEN DATE_SUB(CURDATE(), INTERVAL 6 DAY) AND CURDATE()
             GROUP BY DAYNAME(attendance_date), attendance_date
@@ -806,7 +806,7 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
     const [lastWeekData] = await executeQuery(`
             SELECT 
                 DAYNAME(attendance_date) as day_name,
-                COUNT(CASE WHEN status = 'Present' THEN 1 END) * 100.0 / COUNT(*) as attendance_rate
+                SUM(status IN ('Present','Late')) * 100.0 / NULLIF(SUM(status IN ('Present','Late','Absent')), 0) as attendance_rate   -- late counts as attended; leave is excused
             FROM Attendance 
             WHERE attendance_date BETWEEN DATE_SUB(CURDATE(), INTERVAL 13 DAY) AND DATE_SUB(CURDATE(), INTERVAL 7 DAY)
             GROUP BY DAYNAME(attendance_date), attendance_date
@@ -1007,16 +1007,15 @@ function formatTimeAgo(timestamp) {
 // Helper function to format weekly attendance data
 function formatWeeklyData(data) {
   const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const result = new Array(7).fill(0); // Default to 0% for all days
+  const result = new Array(7).fill(null); // a day with no records is "no data" (null), not 0%
 
   data.forEach(row => {
     const dayIndex = daysOfWeek.indexOf(row.day_name);
-    if (dayIndex !== -1) {
-      result[dayIndex] = Math.round(parseFloat(row.attendance_rate) || 0);
+    if (dayIndex !== -1 && row.attendance_rate != null) {
+      result[dayIndex] = Math.round(parseFloat(row.attendance_rate));
     }
   });
 
-  // If no data for weekends, set to 0
   return result;
 }
 
