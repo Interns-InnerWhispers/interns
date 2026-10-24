@@ -416,6 +416,9 @@ const ACCESS = [
   ['GET', /^\/api\/notifications(\/unread-count)?$/, ANY],
   ['PUT', /^\/api\/notifications\/(read-all|\d+\/read)$/, ANY],
   ['POST', /^\/api\/dream-reflection$/, ANY],
+  [['GET', 'POST'], /^\/api\/support\/tickets$/, ANY],                 // Help & Support (own tickets; HR sees all)
+  [['GET', 'POST'], /^\/api\/support\/tickets\/\d+\/messages$/, ANY],
+  ['PUT', /^\/api\/support\/tickets\/\d+\/status$/, ANY],
 
   // HR and admin only (listed before the intern routes they resemble)
   ['GET', /^\/api\/leave-requests\/pending$/, HR],
@@ -437,7 +440,9 @@ const ACCESS = [
   // Interns (their own records) and HR
   ['GET', /^\/api\/attendance$/, SELF],
   ['POST', /^\/api\/attendance\/checkinout$/, SELF],
-  ['GET', /^\/api\/attendance\/(insights|monthly|weekly)$/, SELF],
+  ['GET', /^\/api\/attendance\/(monthly|weekly)$/, SELF],
+  ['GET', /^\/api\/attendance\/insights$/, HR],                 // names other interns: HR only
+  ['GET', /^\/api\/intern\/overview$/, SELF],
   ['GET', /^\/api\/attendance-status\/([^/]+)$/, SELF, { own: 1 }],
   ['POST', /^\/api\/checkout$/, SELF],
   ['GET', /^\/api\/insterdashboard-stats$/, SELF],
@@ -556,6 +561,33 @@ let db;
 
     await initializeDatabase();
     upgradeInternSchema();
+    // Help & Support: one row per ticket, one per message
+    await executeQuery(`CREATE TABLE IF NOT EXISTS support_tickets (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      requester_name VARCHAR(255),
+      requester_role VARCHAR(30),
+      intern_id VARCHAR(10) NULL,
+      category ENUM('Attendance','Leave','Reports','Tasks','Documents','Account','Technical','Other') NOT NULL DEFAULT 'Other',
+      subject VARCHAR(150) NOT NULL,
+      status ENUM('Open','Answered','Closed') NOT NULL DEFAULT 'Open',
+      unread_for_user TINYINT(1) NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_ticket_user (user_id, updated_at),
+      INDEX idx_ticket_status (status, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+    await executeQuery(`CREATE TABLE IF NOT EXISTS support_messages (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      ticket_id INT NOT NULL,
+      sender_user_id INT NOT NULL,
+      from_staff TINYINT(1) NOT NULL DEFAULT 0,
+      sender_name VARCHAR(255),
+      body TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_msg_ticket (ticket_id, id),
+      FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
     // One-time codes for "forgot password" (only a hash of each code is stored)
     await executeQuery(`CREATE TABLE IF NOT EXISTS password_resets (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -652,6 +684,32 @@ const ATT_COUNTS = `COALESCE(SUM(status = 'Present'), 0) AS present, COALESCE(SU
 // Task status: the database uses 'In Progress' etc., the pages use 'in-progress'
 const TASK_STATUS_DB = { 'pending': 'Pending', 'in-progress': 'In Progress', 'completed': 'Completed', 'overdue': 'Overdue', 'urgent': 'Urgent' };
 const taskStatusForPage = (v) => String(v || 'pending').toLowerCase().replace(/\s+/g, '-');
+
+/* ── Notifications ──
+   notify() saves one and pushes it live. A notification with a userId is personal (only that user sees it);
+   without one it goes to everyone with targetRole ('hr', 'intern' or 'all'). */
+const NOTIFY_TYPES = ['info', 'success', 'warning', 'error'];
+async function notify(title, description, type = 'info', { userId = null, role = 'all' } = {}) {
+  const t = NOTIFY_TYPES.includes(type) ? type : 'info';
+  const r = ['hr', 'intern', 'all'].includes(role) ? role : 'all';
+  const [result] = await executeQuery(
+    'INSERT INTO Notifications (notify, description, type, target_user_id, target_role) VALUES (?, ?, ?, ?, ?)',
+    [String(title).slice(0, 255), String(description).slice(0, 2000), t, userId ? String(userId) : null, r]);
+  const data = { id: result.insertId, title, description, type: t, createdAt: new Date().toISOString() };
+  try {
+    if (userId) io.to(`user-${userId}`).emit('new-notification', data);
+    else if (r === 'hr') io.to('hr-dashboard').emit('new-notification', data);
+  } catch (e) { /* live push is optional */ }
+  return result.insertId;
+}
+// Personal notification for an intern (looked up by intern ID). Never throws: a failed notice must not fail the action.
+async function notifyIntern(internId, title, description, type) {
+  try {
+    const [[u]] = await executeQuery(
+      'SELECT u.id FROM users u JOIN Interns i ON LOWER(u.email) = LOWER(i.email) WHERE i.intern_id = ? LIMIT 1', [internId]);
+    if (u) await notify(title, description, type, { userId: u.id, role: 'intern' });
+  } catch (err) { console.warn('Notification not saved:', err.code || err.message); }
+}
 
 // Current time in India as HH:MM:SS
 function nowTimeIST() {
@@ -1020,6 +1078,8 @@ io.use((socket, next) => {
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   const role = roleOf(socket.user);
+
+  if (socket.user && socket.user.id) socket.join(`user-${socket.user.id}`);
 
   // HR dashboard room: HR and admin only
   socket.on('join-hr-dashboard', () => {
@@ -2338,7 +2398,7 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
 
     // Filter by user or role
     if (userId) {
-      whereClause += ' AND (target_user_id = ? OR target_role = "all" OR target_role = ?)';
+      whereClause += ' AND (target_user_id = ? OR (target_user_id IS NULL AND (target_role = "all" OR target_role = ?)))';
       params.push(userId, userRole);
     } else if (userRole) {
       whereClause += ' AND (target_role = ? OR target_role = "all")';
@@ -2367,13 +2427,13 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
 
 app.post('/api/notifications', async (req, res) => {
   try {
-    const { notify, description, type, targetUserId, targetRole } = req.body;
+    const { notify: title, description, type, targetUserId, targetRole } = req.body;
 
-    if (!notify || !description) {
+    if (!title || !description) {
       return res.status(400).json({ error: 'notify and description are required' });
     }
 
-    const notificationId = await createNotification(notify, description, type, targetUserId, targetRole);
+    const notificationId = await notify(title, description, type, { userId: targetUserId || null, role: targetRole || 'all' });
 
     res.json({
       success: true,
@@ -2408,7 +2468,7 @@ app.put('/api/notifications/read-all', authenticateToken, async (req, res) => {
     const params = [];
 
     if (userId) {
-      whereClause += ' AND (target_user_id = ? OR target_role = "all" OR target_role = ?)';
+      whereClause += ' AND (target_user_id = ? OR (target_user_id IS NULL AND (target_role = "all" OR target_role = ?)))';
       params.push(userId, userRole);
     } else if (userRole) {
       whereClause += ' AND (target_role = ? OR target_role = "all")';
@@ -2433,7 +2493,7 @@ app.get('/api/notifications/unread-count', authenticateToken, async (req, res) =
     const params = [];
 
     if (userId) {
-      whereClause += ' AND (target_user_id = ? OR target_role = "all" OR target_role = ?)';
+      whereClause += ' AND (target_user_id = ? OR (target_user_id IS NULL AND (target_role = "all" OR target_role = ?)))';
       params.push(userId, userRole);
     } else if (userRole) {
       whereClause += ' AND (target_role = ? OR target_role = "all")';
@@ -3044,6 +3104,178 @@ app.get('/api/insterdashboard-stats', async (req, res) => {
   }
 });
 
+/* GET /api/intern/overview?intern_id=…  Everything the dashboard, attendance, leave and performance pages show as numbers.
+   Nothing is made up: a number with no data behind it comes back as null and the page hides it. */
+app.get('/api/intern/overview', async (req, res) => {
+  try {
+    const id = req.query.intern_id;
+    if (!id) return res.status(400).json({ message: 'intern_id is required' });
+    const today = getTodayIST();
+    const monthStart = today.slice(0, 8) + '01';
+    const prevStart = (() => { const d = new Date(monthStart + 'T00:00:00Z'); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 10); })();
+
+    // Four weeks, Monday to Sunday, ending this week
+    const thisMon = new Date(today + 'T00:00:00Z'); thisMon.setUTCDate(thisMon.getUTCDate() - ((thisMon.getUTCDay() + 6) % 7));
+    const weeks = [3, 2, 1, 0].map(k => { const d = new Date(thisMon); d.setUTCDate(d.getUTCDate() - 7 * k); return d.toISOString().slice(0, 10); });
+
+    const [[month]] = await executeQuery(`SELECT ${ATT_COUNTS} FROM Attendance WHERE intern_id = ? AND attendance_date >= ?`, [id, monthStart]);
+    const [[prev]] = await executeQuery(`SELECT ${ATT_COUNTS}, COUNT(*) AS n FROM Attendance WHERE intern_id = ? AND attendance_date >= ? AND attendance_date < ?`, [id, prevStart, monthStart]);
+    const [[all]] = await executeQuery(`SELECT ${ATT_COUNTS}, COALESCE(SUM(hours_worked), 0) AS hours FROM Attendance WHERE intern_id = ?`, [id]);
+    const [[tk]] = await executeQuery("SELECT COUNT(*) AS total, COALESCE(SUM(status = 'Completed'), 0) AS done FROM Tasks WHERE intern_id = ?", [id]);
+    // A completed task is counted in the week it was last updated (when it was marked done)
+    const [doneRows] = await executeQuery(
+      "SELECT DATE_FORMAT(updated_at, '%Y-%m-%d') AS d FROM Tasks WHERE intern_id = ? AND status = 'Completed' AND updated_at >= ?", [id, weeks[0]]);
+    const [[lv]] = await executeQuery(
+      "SELECT COALESCE(SUM(number_of_working_days), 0) AS used FROM leave_requests WHERE intern_id = ? AND status = 'Approved' AND YEAR(from_date) = YEAR(?)", [id, today]);
+
+    const m = internScores(month, tk), a = internScores(all, tk);
+    const prevAttendance = Number(prev.n) ? internScores(prev, null).attendance : null;
+    const weekly = weeks.map((w, k) => {
+      const end = k < 3 ? weeks[k + 1] : '9999-12-31';
+      const label = new Date(w + 'T00:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+      return { week_start: w, label, done: doneRows.filter(r => r.d >= w && r.d < end).length };
+    });
+    const perYear = Number(process.env.ANNUAL_LEAVE_DAYS) || null;   // set by HR; null = no allowance configured
+
+    res.json({
+      month: { attendance: m.attendance, punctuality: m.punctuality, attended: m.attended, late: m.late, absent: m.absent, leave: m.leave,
+               change_vs_last_month: prevAttendance === null ? null : m.attendance - prevAttendance },
+      all_time: { attended: a.attended, late: a.late, punctuality: a.punctuality, hours: Math.round(Number(all.hours) * 10) / 10 },
+      tasks: { total: a.totalTasks, done: a.doneTasks, completion: a.tasks },
+      performance: m.performance,
+      weekly,
+      leave: { per_year: perYear, used_this_year: Number(lv.used), remaining: perYear === null ? null : Math.max(perYear - Number(lv.used), 0) }
+    });
+  } catch (err) {
+    console.error('Intern overview failed:', err.code || err.message);
+    res.status(500).json({ message: 'DB error' });
+  }
+});
+
+/* ── Help & Support tickets ──
+   Interns (and any signed-in user) raise tickets and chat with HR. HR and admins see every ticket and reply.
+   A ticket is "Open" while waiting for HR, "Answered" once HR replies, "Closed" when resolved. */
+const SUPPORT_CATEGORIES = ['Attendance', 'Leave', 'Reports', 'Tasks', 'Documents', 'Account', 'Technical', 'Other'];
+const isStaff = (req) => HR_ROLES.includes(roleOf(req.user));
+async function whoAmI(req) {
+  const [[u]] = await executeQuery('SELECT id, full_name, email FROM users WHERE id = ?', [req.user.id]);
+  return u || { id: req.user.id, full_name: 'User', email: '' };
+}
+async function ticketFor(req, id) {
+  const [[t]] = await executeQuery('SELECT * FROM support_tickets WHERE id = ?', [id]);
+  if (!t) return null;
+  return (isStaff(req) || Number(t.user_id) === Number(req.user.id)) ? t : null;   // others' tickets look like "not found"
+}
+
+app.get('/api/support/tickets', async (req, res) => {
+  try {
+    const status = ['Open', 'Answered', 'Closed'].includes(req.query.status) ? req.query.status : null;
+    const where = [], params = [];
+    if (!isStaff(req)) { where.push('t.user_id = ?'); params.push(req.user.id); }
+    if (status) { where.push('t.status = ?'); params.push(status); }
+    const [rows] = await executeQuery(`
+      SELECT t.id, t.subject, t.category, t.status, t.requester_name, t.requester_role, t.intern_id, t.unread_for_user,
+             t.created_at, t.updated_at,
+             (SELECT body FROM support_messages m WHERE m.ticket_id = t.id ORDER BY m.id DESC LIMIT 1) AS last_message
+      FROM support_tickets t ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY FIELD(t.status, 'Open', 'Answered', 'Closed'), t.updated_at DESC
+      LIMIT 100`, params);
+    res.json({ staff: isStaff(req), tickets: rows });
+  } catch (err) {
+    console.error('List tickets failed:', err.code || err.message);
+    res.status(500).json({ message: 'Could not load tickets' });
+  }
+});
+
+app.post('/api/support/tickets', async (req, res) => {
+  try {
+    const category = SUPPORT_CATEGORIES.includes(req.body.category) ? req.body.category : 'Other';
+    const subject = String(req.body.subject || '').trim().slice(0, 150);
+    const message = String(req.body.message || '').trim().slice(0, 3000);
+    if (subject.length < 3) return res.status(400).json({ message: 'Please add a short subject.' });
+    if (message.length < 5) return res.status(400).json({ message: 'Please describe the problem.' });
+    if (tooMany('ticket:' + req.user.id, 10, 60 * 60 * 1000)) return res.status(429).json({ message: 'Too many tickets in an hour. Please add to an existing one.' });
+
+    const me = await whoAmI(req);
+    const [r] = await executeQuery(
+      'INSERT INTO support_tickets (user_id, requester_name, requester_role, intern_id, category, subject) VALUES (?, ?, ?, ?, ?, ?)',
+      [me.id, me.full_name, roleOf(req.user), req.user.intern_id || null, category, subject]);
+    await executeQuery('INSERT INTO support_messages (ticket_id, sender_user_id, from_staff, sender_name, body) VALUES (?, ?, 0, ?, ?)',
+      [r.insertId, me.id, me.full_name, message]);
+
+    notify('New support ticket', `${me.full_name}${req.user.intern_id ? ' (' + req.user.intern_id + ')' : ''}: ${subject}`, 'info', { role: 'hr' })
+      .catch(() => {});
+    sendEmail({
+      to: DEFAULT_HR_EMAIL,
+      subject: `Support ticket #${r.insertId}: ${subject.replace(/[\r\n]+/g, ' ')}`,
+      html: `<p><strong>${esc(me.full_name)}</strong>${req.user.intern_id ? ' (' + esc(req.user.intern_id) + ')' : ''} raised a ticket.</p>
+        <p><strong>Category:</strong> ${esc(category)}<br><strong>Subject:</strong> ${esc(subject)}</p>
+        <p style="white-space:pre-wrap">${esc(message)}</p>
+        <p>Reply from the HR portal (Help &amp; Support, bottom right).</p>`
+    }).catch(() => {});
+    res.json({ ok: true, id: r.insertId });
+  } catch (err) {
+    console.error('Create ticket failed:', err.code || err.message);
+    res.status(500).json({ message: 'Could not create the ticket. Please try again.' });
+  }
+});
+
+app.get('/api/support/tickets/:id/messages', async (req, res) => {
+  try {
+    const t = await ticketFor(req, req.params.id);
+    if (!t) return res.status(404).json({ message: 'Ticket not found' });
+    const [msgs] = await executeQuery(
+      'SELECT id, from_staff, sender_name, body, created_at, (sender_user_id = ?) AS mine FROM support_messages WHERE ticket_id = ? ORDER BY id',
+      [req.user.id, t.id]);
+    if (!isStaff(req) && t.unread_for_user) await executeQuery('UPDATE support_tickets SET unread_for_user = 0 WHERE id = ?', [t.id]);
+    res.json({ ticket: { id: t.id, subject: t.subject, category: t.category, status: t.status, requester_name: t.requester_name,
+      intern_id: t.intern_id, created_at: t.created_at }, staff: isStaff(req), messages: msgs });
+  } catch (err) {
+    console.error('Load ticket failed:', err.code || err.message);
+    res.status(500).json({ message: 'Could not load the conversation' });
+  }
+});
+
+app.post('/api/support/tickets/:id/messages', async (req, res) => {
+  try {
+    const t = await ticketFor(req, req.params.id);
+    if (!t) return res.status(404).json({ message: 'Ticket not found' });
+    const body = String(req.body.message || '').trim().slice(0, 3000);
+    if (!body) return res.status(400).json({ message: 'Type a message first.' });
+    if (tooMany('ticketmsg:' + req.user.id, 60, 60 * 60 * 1000)) return res.status(429).json({ message: 'Too many messages. Please wait a little.' });
+    const staff = isStaff(req) && Number(t.user_id) !== Number(req.user.id);
+    const me = await whoAmI(req);
+    await executeQuery('INSERT INTO support_messages (ticket_id, sender_user_id, from_staff, sender_name, body) VALUES (?, ?, ?, ?, ?)',
+      [t.id, me.id, staff ? 1 : 0, me.full_name, body]);
+    // HR replied: "Answered" and unread for the person who asked. They replied: back to "Open" for HR.
+    await executeQuery('UPDATE support_tickets SET status = ?, unread_for_user = ? WHERE id = ?', [staff ? 'Answered' : 'Open', staff ? 1 : 0, t.id]);
+    if (staff) notify('HR replied to your ticket', `"${t.subject}": ${body.slice(0, 140)}`, 'info', { userId: t.user_id, role: 'intern' }).catch(() => {});
+    else notify('New reply on a ticket', `${me.full_name}: "${t.subject}"`, 'info', { role: 'hr' }).catch(() => {});
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Reply failed:', err.code || err.message);
+    res.status(500).json({ message: 'Could not send. Please try again.' });
+  }
+});
+
+// Close or reopen. The person who asked can close their own ticket; HR can do both.
+app.put('/api/support/tickets/:id/status', async (req, res) => {
+  try {
+    const t = await ticketFor(req, req.params.id);
+    if (!t) return res.status(404).json({ message: 'Ticket not found' });
+    const status = req.body.status === 'Closed' ? 'Closed' : req.body.status === 'Open' ? 'Open' : null;
+    if (!status) return res.status(400).json({ message: 'Invalid status' });
+    await executeQuery('UPDATE support_tickets SET status = ?, unread_for_user = 0 WHERE id = ?', [status, t.id]);
+    if (isStaff(req) && Number(t.user_id) !== Number(req.user.id) && status === 'Closed') {
+      notify('Ticket resolved', `HR marked "${t.subject}" as resolved.`, 'success', { userId: t.user_id, role: 'intern' }).catch(() => {});
+    }
+    res.json({ ok: true, status });
+  } catch (err) {
+    console.error('Ticket status failed:', err.code || err.message);
+    res.status(500).json({ message: 'Could not update the ticket' });
+  }
+});
+
 // Get weekly attendance (hours worked per day)
 app.get('/api/attendance/weekly', async (req, res) => {
   try {
@@ -3316,8 +3548,11 @@ app.post('/api/addtask', (req, res) => {
       console.error("DB Error:", err);
       return res.status(500).json({ message: 'Internal Server Error' });
     }
-    console.log("DB Insert Result:", result);
-    return res.json({ message: "Task added successfully", result });
+    // A task added by HR for an intern: tell the intern
+    if (HR_ROLES.includes(roleOf(req.user)) && intern_id) {
+      notifyIntern(intern_id, 'New task assigned', `${String(task_title || 'A new task').slice(0, 150)}, due ${dueDate}.`, 'info');
+    }
+    return res.json({ message: "Task added successfully", id: result.insertId });
   });
 });
 
@@ -3671,6 +3906,11 @@ app.put('/api/reports/:id/status', async (req, res) => {
     const [result] = await executeQuery(sql, [status, id]);
 
     if (result.affectedRows === 0) return res.status(404).json({ error: 'Report not found' });
+
+    const [[rep]] = await executeQuery('SELECT intern_id, report_title FROM Reports WHERE id = ?', [id]);
+    if (rep && status !== 'Pending') notifyIntern(rep.intern_id,
+      status === 'Reviewed' ? 'Report reviewed' : 'Report needs changes',
+      `"${rep.report_title || 'Your report'}" was ${status === 'Reviewed' ? 'reviewed by HR' : 'sent back for changes'}.`, status === 'Reviewed' ? 'success' : 'warning');
 
     res.json({ message: 'Status updated successfully' });
   } catch (err) {
@@ -4374,6 +4614,8 @@ app.post('/api/leave-requests', async (req, res) => {
     `;
 
     sendEmail({ to: DEFAULT_HR_EMAIL, subject: hrSubject, html: hrHtml });
+    notify('New leave request', `${String(internDetails.name || intern_id).replace(/&[a-z#0-9]+;/gi, '')} asked for ${number_of_working_days} day(s) from ${from_date} to ${to_date}.`, 'info', { role: 'hr' })
+      .catch(err => console.warn('Notification not saved:', err.code || err.message));
 
     res.json({ message: 'Leave request submitted successfully' });
   } catch (error) {
@@ -4437,6 +4679,11 @@ app.put('/api/leave-requests/:id/status', async (req, res) => {
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Leave request not found' });
     }
+
+    // In-app notification for the intern
+    const [[lr]] = await executeQuery("SELECT intern_id, DATE_FORMAT(from_date, '%d %b') AS f, DATE_FORMAT(to_date, '%d %b') AS t FROM leave_requests WHERE id = ?", [id]);
+    if (lr) notifyIntern(lr.intern_id, `Leave ${status.toLowerCase()}`,
+      `Your leave from ${lr.f} to ${lr.t} was ${status.toLowerCase()}.` + (remarksVal ? ` HR: ${remarksVal}` : ''), status === 'Approved' ? 'success' : 'warning');
 
     // Fetch leave request details along with intern profile to notify intern via email
     try {
@@ -4724,6 +4971,11 @@ app.put('/api/documents/:id/status', (req, res) => {
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Document not found' });
     }
+
+    executeQuery('SELECT intern_id, doc_title FROM Documents WHERE id = ?', [docId]).then(([[d]]) => {
+      if (d && d.intern_id) notifyIntern(d.intern_id, status === 'Reviewed' ? 'Document accepted' : 'Document rejected',
+        `"${d.doc_title}" was ${status === 'Reviewed' ? 'accepted' : 'rejected'} by HR.`, status === 'Reviewed' ? 'success' : 'warning');
+    }).catch(() => {});
 
     res.json({
       message: `Document status updated to ${status} successfully`,

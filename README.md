@@ -48,6 +48,7 @@ flowchart TD
 | **Any signed-in user** | `/api/profile`, notifications, dream reflection |
 | **Self** (intern: own records only; HR: everyone) | attendance, check-in/out, tasks, reports, performance, leave requests, documents, own profile details and photo |
 | **HR / admin** | HR dashboard, intern list, attendance records and edits, leave approval, report and document review, posting notifications, all finance pages, settings |
+| **Help & Support** (any signed-in user; own tickets only, HR sees all) | `GET/POST /api/support/tickets`, `GET/POST /api/support/tickets/:id/messages`, `PUT /api/support/tickets/:id/status` (Open / Closed) |
 | **Doctors / admin** | appointments (incl. Aadhaar and addresses), patients, prescriptions, doctor dashboard |
 
 Roles come from `users.role` (case and spaces ignored). Clinical roles: `psychiatry`, `psychology`, `therapy`, `counseling`, `guidance`, `doctor`.
@@ -119,6 +120,10 @@ sequenceDiagram
 | Names, reasons and notes injected into email HTML | Escaped |
 | Any field writable on the doctor dashboard (`SET ?`) | Only the known counters |
 | Gemini endpoint open to anyone (costs money) | Signed-in users, 20 per hour |
+| A notification for one intern was shown to every intern | Personal notifications (with a user) are seen only by that user |
+| Posting a notification always failed (helper out of scope) | `notify()` / `notifyIntern()` available to every route |
+| Interns could see other interns' attendance ranking (`/api/attendance/insights`) | HR only; interns get their own numbers from `/api/intern/overview` |
+| "Chat with HR" on the attendance page sent messages nowhere | Help & Support tickets, saved and answered by HR |
 | Any file type as a profile photo | JPG, PNG, WebP or GIF, 5 MB max |
 | Weak or missing `SECRET_KEY` accepted | Server refuses to start unless it is 32+ characters |
 | Demo `/upload` routes, debug route, duplicate `/health`, second `server.listen` | Removed |
@@ -193,6 +198,87 @@ Previously absences *raised* the score, late days counted as nothing, the HR lis
 
 ---
 
+## Dashboard numbers: `GET /api/intern/overview`
+
+One call returns every number the intern pages show (interns get only their own; HR can pass any `intern_id`). A number with no data behind it is `null`, and the page hides it rather than inventing one.
+
+| Field | Meaning |
+|---|---|
+| `month.attendance`, `month.punctuality`, `month.attended`, `month.late`, `month.absent`, `month.leave` | This calendar month (India time) |
+| `month.change_vs_last_month` | Attendance % change vs last month; `null` if last month has no records |
+| `all_time.attended`, `all_time.punctuality`, `all_time.hours` | Since the internship started; hours come from check-out times |
+| `tasks.total`, `tasks.done`, `tasks.completion` | All tasks |
+| `weekly[]` | The last 4 weeks (Monday start): `label` and tasks marked done that week |
+| `performance` | This month: average of attendance % and task completion % |
+| `leave.per_year`, `leave.used_this_year`, `leave.remaining` | `per_year` from `ANNUAL_LEAVE_DAYS`; `null` when HR hasn't set an allowance |
+
+---
+
+## Notifications
+
+```mermaid
+flowchart LR
+  A["HR approves / rejects leave"] --> N["notifyIntern()"]
+  B["HR reviews / rejects a report"] --> N
+  C["HR accepts / rejects a document"] --> N
+  D["HR assigns a task"] --> N
+  E["HR replies to a ticket"] --> N
+  F["Intern requests leave"] --> H["notify(role: hr)"]
+  G["New ticket / intern reply"] --> H
+  N --> T[("Notifications<br/>target_user_id = the intern")]
+  H --> R[("Notifications<br/>target_role = hr")]
+  T --> Bell["Bell on the intern's pages"]
+  R --> HBell["Bell on HR pages"]
+```
+
+- A notification with `target_user_id` is **personal**; without one it goes to everyone with `target_role` (`hr`, `intern` or `all`).
+- `GET /api/notifications`, `GET /api/notifications/unread-count`, `PUT /api/notifications/read-all`: the bell loads the latest 15 every minute and marks them read when opened.
+- Live push: each signed-in Socket.IO connection joins `user-<id>`; HR also joins `hr-dashboard`.
+- `notifyIntern()` never throws, so a failed notice never fails the action (leave approval etc.).
+- Known limit: role-wide notifications have one shared read flag.
+
+---
+
+## Help & Support tickets
+
+The chat button (bottom right of every portal page, `public_html/portal/support.js`) is backed by two tables, created automatically on start:
+
+| Table | Columns |
+|---|---|
+| `support_tickets` | `id`, `user_id`, `requester_name`, `requester_role`, `intern_id`, `category`, `subject`, `status` (`Open` / `Answered` / `Closed`), `unread_for_user`, timestamps |
+| `support_messages` | `id`, `ticket_id`, `sender_user_id`, `from_staff`, `sender_name`, `body`, `created_at` |
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor I as Intern
+  participant W as Chat widget
+  participant A as Backend
+  actor H as HR
+  I->>W: Raise a ticket (category, subject, message)
+  W->>A: POST /api/support/tickets
+  A->>A: Save ticket (Open) + first message
+  A-->>H: Bell notification + email to HR_EMAIL
+  H->>W: Opens Support inbox, replies
+  W->>A: POST /api/support/tickets/:id/messages
+  A->>A: Status Answered, unread for the intern
+  A-->>I: Bell notification + red badge on the chat button
+  I->>W: Replies (status back to Open) or "Mark as resolved"
+  W->>A: PUT /api/support/tickets/:id/status {Closed}
+```
+
+| Route | Who |
+|---|---|
+| `GET /api/support/tickets?status=` | Own tickets; HR and admins see all (Open first) |
+| `POST /api/support/tickets` | Any signed-in user; 10 per hour |
+| `GET /api/support/tickets/:id/messages` | Owner or HR; others get 404 |
+| `POST /api/support/tickets/:id/messages` | Owner or HR; 60 messages per hour |
+| `PUT /api/support/tickets/:id/status` | Owner or HR: `Closed` or `Open` |
+
+Categories: Attendance, Leave, Reports, Tasks, Documents, Account, Technical, Other. No attachments yet (people paste a link).
+
+---
+
 ## Configuration
 
 Set in **Render → Environment** (see `.env.example`):
@@ -205,6 +291,7 @@ Set in **Render → Environment** (see `.env.example`):
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Yes | Hostinger MySQL |
 | `CLOUDINARY_CLOUDNAME`, `CLOUDINARY_API`, `CLOUDINARY_APISEC` | Yes | Profile photos |
 | `BREVO_API_KEY` or `SMTP_*`, `SMTP_FROM`, `HR_EMAIL` | Yes | Emails (attendance, leave, reset codes) |
+| `ANNUAL_LEAVE_DAYS` | No | Leave days per intern per year. Empty = the Leave page shows days taken, with no made-up balance |
 | `GEMINI_API` | No | Dream reflection |
 
 ---
@@ -216,7 +303,7 @@ npm install
 npm test
 ```
 
-`test.js` starts the real server on a fake database and checks that: removed routes stay gone; the old password reset is refused; patients' records are doctors-only; nobody can self-register as HR/admin; the invite code and password length are enforced; interns can't read or write other interns' data or HR pages; the expense category is passed as a value (no SQL injection); unknown routes and forged tokens are refused; login is rate-limited; CORS refuses other sites.
+`test.js` starts the real server on a fake database and checks that: removed routes stay gone; the old password reset is refused; patients' records are doctors-only; nobody can self-register as HR/admin; the invite code and password length are enforced; interns can't read or write other interns' data or HR pages; the expense category is passed as a value (no SQL injection); unknown routes and forged tokens are refused; login is rate-limited; CORS refuses other sites; the overview returns real numbers (and no leave balance without `ANNUAL_LEAVE_DAYS`); the team ranking is HR-only; personal notifications stay personal; support tickets can only be read by their owner and HR, and HR replies move them to Answered.
 
 ---
 

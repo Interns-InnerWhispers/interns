@@ -12,14 +12,23 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 
 // Fake mysql2: records every query so we can check what reached the database
-const queries = [];
+const queries = [], tickets = [], tmsgs = [];
 const HASH = bcrypt.hashSync('right-password', 4);
-function answer(sql) {
+function answer(sql, p = []) {
+  // Help & Support
+  if (/SELECT id, full_name, email FROM users WHERE id/.test(sql)) return [{ id: p[0], full_name: 'User ' + p[0], email: 'u' + p[0] + '@x.in' }];
+  if (/^INSERT INTO support_tickets/.test(sql)) { tickets.push({ id: tickets.length + 1, user_id: p[0], subject: p[5], status: 'Open', unread_for_user: 0 }); return { insertId: tickets.length }; }
+  if (/^INSERT INTO support_messages/.test(sql)) { tmsgs.push({ ticket_id: p[0], sender_user_id: p[1], body: p[p.length - 1] }); return { insertId: tmsgs.length }; }
+  if (/SELECT \* FROM support_tickets WHERE id/.test(sql)) return tickets.filter(t => t.id === Number(p[0]));
+  if (/^UPDATE support_tickets SET status = \?, unread_for_user = \? WHERE id/.test(sql)) { const t = tickets.find(x => x.id === p[2]); if (t) { t.status = p[0]; t.unread_for_user = p[1]; } return { affectedRows: 1 }; }
+  if (/FROM support_messages WHERE ticket_id/.test(sql)) return tmsgs.filter(m => m.ticket_id === p[1]);
+  if (/FROM support_tickets t/.test(sql)) return /t\.user_id = \?/.test(sql) ? tickets.filter(t => t.user_id === p[0]) : tickets;
   if (/FROM users WHERE email = \?/.test(sql)) return [{ id: 1, email: 'hr@x.in', role: 'hr', password_hash: HASH, status: 'active', full_name: 'HR' }];
   if (/SELECT intern_id FROM `Documents`/.test(sql)) return [{ intern_id: 'INT002' }];
   if (/SELECT intern_id FROM `Tasks`/.test(sql)) return [{ intern_id: 'INT001' }];
   if (/^\s*(INSERT|UPDATE|DELETE|CREATE|ALTER)/i.test(sql)) return { affectedRows: 1, insertId: 1 };
-  if (/AS present, COALESCE/.test(sql)) return [{ present: 8, late: 2, absent: 2, leave_days: 1 }];   // attendance counts
+  if (/AS used FROM leave_requests/.test(sql)) return [{ used: 3 }];
+  if (/AS present, COALESCE/.test(sql)) return [{ present: 8, late: 2, absent: 2, leave_days: 1, n: 13, hours: 41.25 }];   // attendance counts
   if (/COUNT\(\*\) AS total, COALESCE\(SUM\(status = 'Completed'\)/.test(sql)) return [{ total: 4, done: 3 }];   // task counts
   if (/SELECT task_id, task_title, due_date/.test(sql)) return [{ task_id: 1, task_title: 'Design', due_date: '2026-01-02', status: 'In Progress', priority: 'High' }];
   if (/SELECT email, internrole, phone/.test(sql)) return [{ email: 'a@x.in', internrole: 'Dev', phone: '1' }];
@@ -30,11 +39,11 @@ const fakeDb = {
   query(sql, params, cb) {
     if (typeof params === 'function') { cb = params; params = []; }
     queries.push({ sql, params });
-    const r = answer(sql);
+    const r = answer(sql, params);
     if (cb) setImmediate(() => cb(null, r));
     return { on() {} };
   },
-  promise() { return { query: async (sql, params) => { queries.push({ sql, params }); return [answer(sql)]; } }; },
+  promise() { return { query: async (sql, params) => { queries.push({ sql, params }); return [answer(sql, params)]; } }; },
   end(cb) { cb && cb(); },
 };
 require.cache[require.resolve('mysql2')] = { exports: { createPool: () => fakeDb, createConnection: () => fakeDb } };
@@ -117,6 +126,49 @@ setTimeout(async () => {
     // HR list: real attendance and performance instead of 0
     r = await call('GET', '/api/interns', { token: HRT });
     assert.equal(r.status, 200);
+
+    // Overview: real numbers only
+    process.env.ANNUAL_LEAVE_DAYS = '12';
+    r = await call('GET', '/api/intern/overview', { token: INT });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual([r.body.month.attendance, r.body.month.punctuality, r.body.month.late], [83, 80, 2]);
+    assert.equal(r.body.month.change_vs_last_month, 0, 'same numbers last month in the fake db');
+    assert.deepEqual([r.body.all_time.hours, r.body.tasks.done, r.body.tasks.completion], [41.3, 3, 75]);
+    assert.equal(r.body.weekly.length, 4);
+    assert.deepEqual([r.body.leave.per_year, r.body.leave.used_this_year, r.body.leave.remaining], [12, 3, 9]);
+    delete process.env.ANNUAL_LEAVE_DAYS;
+    r = await call('GET', '/api/intern/overview', { token: INT });
+    assert.equal(r.body.leave.remaining, null, 'no allowance set: no made-up balance');
+    assert.equal((await call('GET', '/api/intern/overview?intern_id=INT002', { token: INT })).status, 403);
+
+    // The team ranking names other interns: HR only
+    assert.equal((await call('GET', '/api/attendance/insights', { token: INT })).status, 403);
+    assert.equal((await call('GET', '/api/attendance/insights', { token: HRT })).status, 200);
+
+    // Personal notifications stay personal
+    queries.length = 0;
+    await call('GET', '/api/notifications', { token: INT });
+    assert.ok(queries.some(q => /target_user_id IS NULL/.test(q.sql)), 'role-wide only when no user is named');
+
+    // Help & Support: raise, read only your own, HR replies
+    r = await call('POST', '/api/support/tickets', { token: INT, body: { category: 'Leave', subject: 'Leave not showing', message: 'My approved leave is missing.' } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const tid = r.body.id;
+    assert.equal((await call('POST', '/api/support/tickets', { token: INT, body: { subject: 'x', message: 'y' } })).status, 400, 'too short');
+    r = await call('GET', '/api/support/tickets', { token: INT });
+    assert.equal(r.body.tickets.length, 1);
+    const OTHER = sign({ id: 9, role: 'Intern', intern_id: 'INT009' });
+    assert.equal((await call('GET', '/api/support/tickets/' + tid + '/messages', { token: OTHER })).status, 404, "another intern can't read it");
+    assert.equal((await call('POST', '/api/support/tickets/' + tid + '/messages', { token: OTHER, body: { message: 'hi' } })).status, 404);
+    assert.equal((await call('GET', '/api/support/tickets', { token: OTHER })).body.tickets.length, 0, 'their list is empty');
+    assert.equal((await call('GET', '/api/support/tickets/' + tid + '/messages', { token: INT })).status, 200, 'the owner can read it');
+    r = await call('POST', '/api/support/tickets/' + tid + '/messages', { token: HRT, body: { message: 'Fixed it, please check.' } });
+    assert.equal(r.status, 200);
+    assert.equal(tickets[tid - 1].status, 'Answered', 'HR reply marks it answered');
+    await call('POST', '/api/support/tickets/' + tid + '/messages', { token: INT, body: { message: 'Thanks!' } });
+    assert.equal(tickets[tid - 1].status, 'Open', 'intern reply sends it back to HR');
+    assert.equal((await call('PUT', '/api/support/tickets/' + tid + '/status', { token: INT, body: { status: 'Closed' } })).status, 200);
+    assert.equal((await call('GET', '/api/support/tickets', { token: HRT })).body.staff, true);
 
     // SQL injection: the category goes in as a value, not as SQL
     queries.length = 0;
