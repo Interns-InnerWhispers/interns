@@ -15,7 +15,27 @@ const app = express();
 const streamifier = require('streamifier');
 const cloudinary = require('cloudinary').v2;
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const JWT_SECRET = process.env.SECRET_KEY;
+// A missing or short secret lets anyone forge logins
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+  console.error('❌ SECRET_KEY must be set to a random string of at least 32 characters.');
+  process.exit(1);
+}
+
+// Escape anything put into email HTML, so names or notes can't inject links or markup
+const esc = (v) => String(v == null ? '' : v)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+// ponytail: in-memory rate limits, per server instance; reset on restart. Use Redis if you run several instances.
+const hits = new Map();
+function tooMany(key, max, windowMs) {
+  const now = Date.now(), list = (hits.get(key) || []).filter(t => now - t < windowMs);
+  list.push(now); hits.set(key, list);
+  return list.length > max;
+}
+setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (!v.some(t => now - t < 864e5)) hits.delete(k); }, 36e5).unref();
+const clientIp = (req) => req.ip || req.socket.remoteAddress || '';
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUDNAME,
   api_key: process.env.CLOUDINARY_API,
@@ -41,10 +61,7 @@ const mailTransporter = nodemailer.createTransport({
   },
   connectionTimeout: 10000,
   greetingTimeout: 10000,
-  socketTimeout: 10000,
-  tls: {
-    rejectUnauthorized: false
-  }
+  socketTimeout: 10000
 });
 
 async function sendEmail({ to, subject, html, text }) {
@@ -122,13 +139,13 @@ function buildPlainTextEmailHtml({ title, internName, internId, date, time, late
 <body style="font-family: Arial, Helvetica, sans-serif; font-size: 15px; line-height: 1.6; color: #222222; margin: 0; padding: 20px; background-color: #ffffff;">
   <div style="max-width: 650px; margin: 0; padding: 0;">
     
-    <p>Dear ${isHR ? 'HR Team' : (internName ? `<strong>${internName}</strong>` : 'Intern')},</p>
+    <p>Dear ${isHR ? 'HR Team' : (internName ? `<strong>${esc(internName)}</strong>` : 'Intern')},</p>
     
     <p>${message}</p>
     
     <p><strong>Attendance Record Details:</strong></p>
     <ul style="margin: 10px 0 16px 0; padding-left: 20px;">
-      <li><strong>Intern Name:</strong> ${internName || 'N/A'} ${internId ? `(${internId})` : ''}</li>
+      <li><strong>Intern Name:</strong> ${esc(internName || 'N/A')} ${internId ? `(${esc(internId)})` : ''}</li>
       <li><strong>Check-in Date & Time:</strong> ${date} at ${time} IST</li>
       <li><strong>Official Shift Timings:</strong> 6:30 PM to 10:00 PM (10-minute grace window till 6:40 PM)</li>
       <li><strong>Monthly Late Count (${monthName}):</strong> ${lateCount}</li>
@@ -350,25 +367,161 @@ async function processInternCheckIn({ internId, internName, internEmail, date, t
 ------------------------------- */
 app.use(helmet());
 app.use(compression());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
 
-// ✅ CORS for Hostinger + your domains
-app.use(cors({
-  origin: "*",
+// Only the website may call this API from a browser. Add origins (comma-separated) in ALLOWED_ORIGINS.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://innerwhispers.in,https://www.innerwhispers.in')
+  .split(',').map(s => s.trim()).filter(Boolean);
+const originAllowed = (origin) => !origin || ALLOWED_ORIGINS.includes(origin)
+  || (process.env.NODE_ENV !== 'production' && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin));
+const corsOptions = {
+  origin: (origin, cb) => cb(null, originAllowed(origin)),
   methods: "GET,POST,PUT,DELETE,OPTIONS",
-  credentials: true,
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
   optionsSuccessStatus: 204
-}));
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
-app.options('*', cors());
-app.set('trust proxy', 1);
+// Personal data: never cache API responses
+app.use('/api', (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+// Profile photos: images only, up to 5 MB
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => (/^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)
+    ? cb(null, true) : cb(new Error('Only images and PDF files are allowed (photos must be JPG, PNG, WebP or GIF).')))
+});
 
+/* ------------------------------
+   🔐 Access control
+   Every /api route is listed here with who may call it; anything not listed is refused.
+   SELF routes: HR and admins see everyone, interns only themselves (their intern_id is forced on the request).
+------------------------------- */
+const PUBLIC = 'public', ANY = 'any', SELF = 'self', HR = 'hr', CLINICAL = 'clinical';
+const HR_ROLES = ['hr', 'admin'];
+const CLINICAL_ROLES = ['admin', 'doctor', 'psychiatry', 'psychology', 'therapy', 'counseling', 'guidance'];
+// [method(s), path, who, options]  options.own = URL part that is an intern ID; options.check = record that must belong to the intern
+const ACCESS = [
+  ['POST', /^\/api\/login$/, PUBLIC],
+  ['POST', /^\/api\/forgotpass(\/request|\/reset)?$/, PUBLIC],
+  ['POST', /^\/api\/register$/, PUBLIC],                      // role rules are inside the route
+  ['GET', /^\/api\/profile$/, ANY],
+  ['GET', /^\/api\/notifications(\/unread-count)?$/, ANY],
+  ['PUT', /^\/api\/notifications\/(read-all|\d+\/read)$/, ANY],
+  ['POST', /^\/api\/dream-reflection$/, ANY],
 
-const upload = multer({ storage: multer.memoryStorage() });
+  // HR and admin only (listed before the intern routes they resemble)
+  ['GET', /^\/api\/leave-requests\/pending$/, HR],
+  ['PUT', /^\/api\/leave-requests\/\d+\/status$/, HR],
+  ['GET', /^\/api\/dashboard\/(stats|attendance|leave-requests|pipeline|activities)$/, HR],
+  ['GET', /^\/api\/(interns|interns-count)$/, HR],
+  ['GET', /^\/api\/attendance\/(daily|records|allweekly|status|trends)$/, HR],
+  ['POST', /^\/api\/attendance$/, HR],
+  ['PUT', /^\/api\/attendance\/\d+$/, HR],
+  ['GET', /^\/api\/departments\/performance$/, HR],
+  ['POST', /^\/api\/notifications$/, HR],
+  ['PUT', /^\/api\/reports\/\d+\/status$/, HR],
+  ['GET', /^\/api\/documents\/all$/, HR],
+  ['PUT', /^\/api\/documents\/\d+\/status$/, HR],
+  ['GET', /^\/api\/(transactions|filtertransactions|summary|expenseSummary|budgets|payments|invoices|receipts|irsummary|income-trend|settings)$/, HR],
+  ['POST', /^\/api\/budgets$/, HR],
+  ['PUT', /^\/api\/settings$/, HR],
+
+  // Interns (their own records) and HR
+  ['GET', /^\/api\/attendance$/, SELF],
+  ['POST', /^\/api\/attendance\/checkinout$/, SELF],
+  ['GET', /^\/api\/attendance\/(insights|monthly|weekly)$/, SELF],
+  ['GET', /^\/api\/attendance-status\/([^/]+)$/, SELF, { own: 1 }],
+  ['POST', /^\/api\/checkout$/, SELF],
+  ['GET', /^\/api\/insterdashboard-stats$/, SELF],
+  ['GET', /^\/api\/getintern\/([^/]+)$/, SELF, { own: 1 }],
+  [['GET', 'PUT'], /^\/api\/interns\/details\/([^/]+)$/, SELF, { own: 1 }],
+  ['PUT', /^\/api\/interns\/(?:updateintern|updateimage)\/([^/]+)$/, SELF, { own: 1 }],
+  ['GET', /^\/api\/tasks\/all$/, SELF],
+  ['GET', /^\/api\/gettasks\/([^/]+)$/, SELF, { own: 1 }],
+  ['POST', /^\/api\/addtask$/, SELF],
+  ['PUT', /^\/api\/changetask\/(\d+)$/, SELF, { check: ['Tasks', 'task_id'] }],
+  ['GET', /^\/api\/reports$/, SELF],
+  ['POST', /^\/api\/(submitreport|reports\/upload)$/, SELF],
+  ['GET', /^\/api\/reports\/download\/(\d+)$/, SELF, { check: ['Reports', 'id'] }],
+  ['GET', /^\/api\/intern\/performance(\/insights)?$/, SELF],
+  ['POST', /^\/api\/leave-requests$/, SELF],
+  ['GET', /^\/api\/leave-requests\/([^/]+)$/, SELF, { own: 1 }],
+  ['GET', /^\/api\/documents(\/submitted|\/issued)?$/, SELF],
+  ['POST', /^\/api\/documents\/upload$/, SELF],
+  ['GET', /^\/api\/documents\/download\/(\d+)$/, SELF, { check: ['Documents', 'id'] }],
+
+  // Doctors and admin (patient records)
+  ['GET', /^\/api\/dashboard-stats$/, CLINICAL],
+  ['POST', /^\/api\/appointments$/, CLINICAL],
+  ['GET', /^\/api\/appointments\/\d+$/, CLINICAL],
+  ['PUT', /^\/api\/appointments\/\d+\/\d+\/(status|reschedule)$/, CLINICAL],
+  ['GET', /^\/api\/patients$/, CLINICAL],
+  [['GET', 'POST'], /^\/api\/prescriptions$/, CLINICAL],
+  ['GET', /^\/api\/prescriptions\/(\d+|search)$/, CLINICAL],
+  ['GET', /^\/api\/(getalldoc|getdoc\/\d+)$/, CLINICAL],
+  [['GET', 'PUT'], /^\/api\/dashboard_ui\/\d+$/, CLINICAL],
+];
+
+function readToken(req) {
+  const h = req.headers.authorization || '';
+  if (!h.startsWith('Bearer ')) return null;
+  try { return jwt.verify(h.slice(7), JWT_SECRET, { algorithms: ['HS256'] }); } catch { return null; }
+}
+const roleOf = (user) => String((user && user.role) || '').toLowerCase().replace(/[^a-z]/g, '');
+
+async function accessGate(req, res, next) {
+  if (req.method === 'OPTIONS') return next();
+  if (!req.path.startsWith('/api/')) {
+    return (req.path === '/' || req.path === '/health') ? next() : res.status(404).json({ message: 'Not found' });
+  }
+  const rule = ACCESS.find(([m, re]) => (Array.isArray(m) ? m.includes(req.method) : m === req.method) && re.test(req.path));
+  if (!rule) return res.status(404).json({ message: 'Not found' });
+  const [, re, who, opts = {}] = rule;
+
+  const user = readToken(req);
+  if (user) req.user = user;
+  if (who === PUBLIC) return next();
+  if (!user) return res.status(401).json({ message: 'Please sign in again.' });
+
+  const role = roleOf(user);
+  if (who === ANY) return next();
+  if (who === HR) return HR_ROLES.includes(role) ? next() : res.status(403).json({ message: 'Not allowed' });
+  if (who === CLINICAL) return CLINICAL_ROLES.includes(role) ? next() : res.status(403).json({ message: 'Not allowed' });
+
+  // SELF: HR and admin see everyone; interns only themselves; other roles nothing
+  if (HR_ROLES.includes(role)) return next();
+  if (role !== 'intern' || !user.intern_id) return res.status(403).json({ message: 'Not allowed' });
+  const me = String(user.intern_id);
+  const deny = () => res.status(403).json({ message: 'Not allowed' });
+
+  if (opts.own && decodeURIComponent(req.path.match(re)[opts.own]) !== me) return deny();
+  if (req.query.intern_id !== undefined && String(req.query.intern_id) !== me) return deny();
+  req.query.intern_id = me;
+  if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
+    if (req.body.intern_id !== undefined && String(req.body.intern_id) !== me) return deny();
+    if (req.method !== 'GET') req.body.intern_id = me;
+  }
+  if (opts.check) {
+    try {
+      const [table, col] = opts.check;
+      const [rows] = await executeQuery(`SELECT intern_id FROM \`${table}\` WHERE \`${col}\` = ?`, [req.path.match(re)[1]]);
+      if (!rows.length || String(rows[0].intern_id) !== me) return deny();
+    } catch (err) {
+      console.error('Access check failed:', err.code || err.message);
+      return res.status(500).json({ message: 'Internal Server Error' });
+    }
+  }
+  next();
+}
+app.use(accessGate);
 
 /* ------------------------------
    🗄️ Database Setup
@@ -402,6 +555,16 @@ let db;
     console.log('✅ Connected to MySQL (pool)');
 
     await initializeDatabase();
+    upgradeInternSchema();
+    // One-time codes for "forgot password" (only a hash of each code is stored)
+    await executeQuery(`CREATE TABLE IF NOT EXISTS password_resets (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      email VARCHAR(255) NOT NULL,
+      code_hash CHAR(64) NOT NULL,
+      attempts INT NOT NULL DEFAULT 0,
+      expires_at BIGINT NOT NULL,
+      INDEX idx_reset_email (email)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   } catch (err) {
     console.error('❌ DB Connection Error:', err.message);
   }
@@ -434,6 +597,69 @@ async function initializeDatabase() {
 }
 
 /* ------------------------------
+   🧱 Schema upgrades for the intern portal
+   Each step is safe to run again and never deletes data. A step that is already done just fails quietly.
+------------------------------- */
+async function upgradeInternSchema() {
+  const steps = [
+    // Columns that were too short for what the portal pages allow
+    ['Interns.name', 'ALTER TABLE Interns MODIFY COLUMN name VARCHAR(100) NOT NULL'],
+    ['Interns.internrole', 'ALTER TABLE Interns MODIFY COLUMN internrole VARCHAR(60) NOT NULL'],   // "Full Stack Development" is 22 characters
+    ['Interns.email', 'ALTER TABLE Interns MODIFY COLUMN email VARCHAR(255) NOT NULL'],
+    ['Interns.phone', 'ALTER TABLE Interns MODIFY COLUMN phone VARCHAR(20) NULL'],               // "+91 98765 43210"
+    ['Reports.report_title', 'ALTER TABLE Reports MODIFY COLUMN report_title VARCHAR(150) NULL'], // the form allows 140
+    ['Documents.doc_title', 'ALTER TABLE Documents MODIFY COLUMN doc_title VARCHAR(150) NOT NULL'],
+    ['Tasks.task_title', 'ALTER TABLE Tasks MODIFY COLUMN task_title VARCHAR(150) NOT NULL'],    // the form allows 120
+    // Indexes for the lists the dashboards load most
+    ['idx_reports_intern_time', 'ALTER TABLE Reports ADD INDEX idx_reports_intern_time (intern_id, submitted_at)'],
+    ['idx_tasks_intern_due', 'ALTER TABLE Tasks ADD INDEX idx_tasks_intern_due (intern_id, due_date)'],
+    ['idx_attendance_date', 'ALTER TABLE Attendance ADD INDEX idx_attendance_date (attendance_date, status)'],
+    ['idx_notifications_target', 'ALTER TABLE Notifications ADD INDEX idx_notifications_target (target_role, created_at)'],
+    ['idx_leave_status', 'ALTER TABLE leave_requests ADD INDEX idx_leave_status (status, from_date)'],
+    // Fill in hours worked for past days that have both a check-in and a check-out
+    ['Attendance.hours_worked', `UPDATE Attendance SET hours_worked = ROUND(TIME_TO_SEC(TIMEDIFF(check_out, check_in)) / 3600, 2)
+       WHERE check_in IS NOT NULL AND check_out IS NOT NULL AND check_out > check_in AND (hours_worked IS NULL OR hours_worked = 0)`],
+  ];
+  for (const [name, sql] of steps) {
+    try { await executeQuery(sql); } catch (err) {
+      if (!/Duplicate key name/.test(err.message)) console.warn(`Schema step ${name} skipped:`, err.code || err.message);
+    }
+  }
+}
+
+/* ------------------------------
+   📊 Intern numbers, worked out the same way everywhere
+   Attended = Present + Late. Leave is excused (not counted against attendance).
+   Attendance %  = attended / (attended + absent)
+   Punctuality % = on time / attended
+   Task %        = completed tasks / all tasks
+   Performance   = average of attendance % and task % (attendance % only if no tasks yet)
+------------------------------- */
+const pct = (part, whole) => (whole > 0 ? Math.round((part / whole) * 100) : 0);
+function internScores(a, t) {
+  const present = Number(a.present) || 0, late = Number(a.late) || 0, absent = Number(a.absent) || 0;
+  const attended = present + late;
+  const attendance = pct(attended, attended + absent);
+  const punctuality = pct(present, attended);
+  const totalTasks = Number(t && t.total) || 0, doneTasks = Number(t && t.done) || 0;
+  const tasks = pct(doneTasks, totalTasks);
+  const performance = totalTasks ? Math.round((attendance + tasks) / 2) : attendance;
+  return { attended, present, late, absent, leave: Number(a.leave_days) || 0, attendance, punctuality, totalTasks, doneTasks, tasks, performance };
+}
+const ATT_COUNTS = `COALESCE(SUM(status = 'Present'), 0) AS present, COALESCE(SUM(status = 'Late'), 0) AS late,
+  COALESCE(SUM(status = 'Absent'), 0) AS absent, COALESCE(SUM(status = 'Leave'), 0) AS leave_days`;
+
+// Task status: the database uses 'In Progress' etc., the pages use 'in-progress'
+const TASK_STATUS_DB = { 'pending': 'Pending', 'in-progress': 'In Progress', 'completed': 'Completed', 'overdue': 'Overdue', 'urgent': 'Urgent' };
+const taskStatusForPage = (v) => String(v || 'pending').toLowerCase().replace(/\s+/g, '-');
+
+// Current time in India as HH:MM:SS
+function nowTimeIST() {
+  const ist = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+  return ist.toISOString().slice(11, 19);
+}
+
+/* ------------------------------
    🌐 Routes
 ------------------------------- */
 app.get('/', (req, res) => res.send('🚀 API is running on Hostinger'));
@@ -448,20 +674,18 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Example file upload route
-app.post('/upload', upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  res.json({ success: true, file: req.file.filename });
-});
 
 /* ------------------------------
    🛠️ Error Handling
 ------------------------------- */
 app.use((err, req, res, next) => {
-  console.error(err.stack);
   if (err.message.includes('Only images and PDF')) {
-    return res.status(400).json({ error: err.message });
+    return res.status(400).json({ error: err.message, message: err.message });
   }
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({ error: 'The file is larger than 5 MB.', message: 'The file is larger than 5 MB.' });
+  }
+  console.error(err.stack);
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
@@ -751,37 +975,6 @@ function executeQuery(sql, params = []) {
   });
 }
 
-app.get('/health', async (req, res) => {
-  try {
-    const [result] = await executeQuery('SELECT 1');
-    if (result[0]['1'] === 1) {
-      res.send('');
-    } else {
-      res.status(500).send('');
-    }
-  } catch {
-    res.status(500).send('');
-  }
-});
-
-// Upload example
-app.post('/upload', upload.single('file'), (req, res) => {
-  res.json({
-    message: '',
-    message: '✅ File uploaded successfully',
-    file: req.file
-  });
-});
-
-// Example DB query
-app.get('/users', async (req, res) => {
-  try {
-    const [rows] = await executeQuery("SELECT * FROM users");
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 /* ------------------------------
    Error Handling
@@ -808,25 +1001,34 @@ if (process.env.NODE_ENV === 'production') {
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: (origin, cb) => cb(null, originAllowed(origin)),
     methods: ["GET", "POST"]
+  }
+});
+
+// Only signed-in users may connect (token in socket.handshake.auth.token)
+io.use((socket, next) => {
+  const token = socket.handshake.auth && socket.handshake.auth.token;
+  try {
+    socket.user = jwt.verify(String(token || ''), JWT_SECRET, { algorithms: ['HS256'] });
+    next();
+  } catch {
+    next(new Error('unauthorized'));
   }
 });
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-  console.log('🔌 User connected:', socket.id);
+  const role = roleOf(socket.user);
 
-  // Join HR dashboard room
+  // HR dashboard room: HR and admin only
   socket.on('join-hr-dashboard', () => {
-    socket.join('hr-dashboard');
-    console.log('👤 User joined HR dashboard room');
+    if (HR_ROLES.includes(role)) socket.join('hr-dashboard');
   });
 
-  // Join intern room for personal updates
+  // Personal room: an intern can only join their own
   socket.on('join-intern-room', (internId) => {
-    socket.join(`intern-${internId}`);
-    console.log(`👨‍💻 Intern ${internId} joined their room`);
+    if (HR_ROLES.includes(role) || String(internId) === String(socket.user.intern_id)) socket.join(`intern-${internId}`);
   });
 
   socket.on('disconnect', () => {
@@ -1130,6 +1332,23 @@ CREATE TABLE IF NOT EXISTS ${Q('doctor_ui')} (
     console.log("✅ Interns table updated successfully");
   }
   updateInternsTable();
+
+  /* ── Intern profile details (address, college, emergency contact, links) ──
+     Each column is added only if it is missing. */
+  async function ensureInternDetailColumns() {
+    for (const [col, def] of INTERN_DETAIL_COLUMNS) {
+      try {
+        const [rows] = await db.promise().query(
+          'SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+          ['Interns', col]
+        );
+        if (!rows[0].n) await db.promise().query('ALTER TABLE Interns ADD COLUMN `' + col + '` ' + def);
+      } catch (err) {
+        console.error('Could not add Interns.' + col + ':', err.message);
+      }
+    }
+  }
+  ensureInternDetailColumns();
   // Add foreign key constraints for Interns table
   db.query("ALTER TABLE Interns ADD CONSTRAINT fk_intern_hr FOREIGN KEY (HR_id) REFERENCES Interns(id)", () => { });
   db.query("ALTER TABLE Interns ADD CONSTRAINT fk_intern_team FOREIGN KEY (Team_id) REFERENCES Teams(id)", () => { });
@@ -1686,8 +1905,11 @@ function authenticateToken(req, res, next) {
 
 
 app.post("/api/dream-reflection", async (req, res) => {
-  const { text, emotions } = req.body;
-  console.log(req.body)
+  const text = String(req.body.text || '').slice(0, 2000);
+  const emotions = Array.isArray(req.body.emotions) ? req.body.emotions.slice(0, 10).map(e => String(e).slice(0, 30)) : [];
+  if (tooMany('dream:' + req.user.id, 20, 60 * 60 * 1000)) {
+    return res.status(429).json({ reflection: "You've reached the limit for now. Please try again in an hour." });
+  }
 
   if (!text) {
     return res.status(400).json({ reflection: "Dream text is required." });
@@ -1747,41 +1969,57 @@ app.get('/api/interns-count', async (req, res) => {
 // API to get all interns data
 app.get('/api/interns', authenticateToken, async (req, res) => {
   try {
+    // Monday of this week (India time), for the Wednesday / Saturday report columns
+    const t = new Date(getTodayIST() + 'T00:00:00Z');
+    t.setUTCDate(t.getUTCDate() - ((t.getUTCDay() + 6) % 7));
+    const weekStart = t.toISOString().slice(0, 10);
+
     const [interns] = await executeQuery(`
-            SELECT 
-               *
-            FROM Interns 
-            ORDER BY created_at DESC
-        `);
+      SELECT i.*,
+        COALESCE(a.present, 0) AS present, COALESCE(a.late, 0) AS late, COALESCE(a.absent, 0) AS absent, COALESCE(a.leave_days, 0) AS leave_days,
+        COALESCE(tk.total, 0) AS tasks_total, COALESCE(tk.done, 0) AS tasks_done,
+        EXISTS (SELECT 1 FROM Reports r WHERE r.intern_id = i.intern_id AND r.submitted_at >= ? AND r.report_type = 'wednesday') AS wed_done,
+        EXISTS (SELECT 1 FROM Reports r WHERE r.intern_id = i.intern_id AND r.submitted_at >= ? AND r.report_type = 'saturday') AS sat_done
+      FROM Interns i
+      LEFT JOIN (SELECT intern_id, ${ATT_COUNTS} FROM Attendance GROUP BY intern_id) a ON a.intern_id = i.intern_id
+      LEFT JOIN (SELECT intern_id, COUNT(*) AS total, SUM(status = 'Completed') AS done FROM Tasks GROUP BY intern_id) tk ON tk.intern_id = i.intern_id
+      ORDER BY i.created_at DESC`, [weekStart, weekStart]);
 
     // Transform data to match frontend expectations
-    const transformedInterns = interns.map(intern => ({
-      id: intern.intern_id,
-      name: intern.name,
-      email: intern.email,
-      phone: intern.phone,
-      dept: intern.department,
-      department: intern.department,
-      role: intern.internrole,
-      mentor: 'Not Assigned',
-      start: intern.start_date,
-      end: intern.end_date,
-      status: intern.status,
-      attendance: intern.attendance_percentage || 0,
-      wed: 'Missing',
-      sat: 'Missing',
-      university: intern.university || 'N/A',
-      performance_score: intern.performance_score || 0,
-      hr_id: intern.HR_id || 'N/A',
-      team_id: intern.Team_id || 'N/A',
-      profile_image: intern.profile_image || null,
-      createdAt: intern.created_at,
-      updatedAt: intern.updated_at
-    }));
+    const transformedInterns = interns.map(intern => {
+      const sc = internScores(intern, { total: intern.tasks_total, done: intern.tasks_done });
+      return {
+        id: intern.intern_id,
+        name: intern.name,
+        email: intern.email,
+        phone: intern.phone,
+        dept: intern.department,
+        department: intern.department,
+        role: intern.internrole,
+        mentor: 'Not Assigned',
+        start: intern.start_date,
+        end: intern.end_date,
+        status: intern.status,
+        attendance: sc.attendance,
+        punctuality: sc.punctuality,
+        late_days: sc.late,
+        wed: intern.wed_done ? 'Submitted' : 'Missing',
+        sat: intern.sat_done ? 'Submitted' : 'Missing',
+        university: intern.university || 'N/A',
+        performance_score: sc.performance,
+        tasks_completed: sc.doneTasks,
+        tasks_total: sc.totalTasks,
+        hr_id: intern.HR_id || 'N/A',
+        team_id: intern.Team_id || 'N/A',
+        profile_image: intern.profile_image || null,
+        createdAt: intern.created_at,
+        updatedAt: intern.updated_at
+      };
+    });
 
     res.json({ interns: transformedInterns });
   } catch (error) {
-    console.error('Error fetching interns:', error);
+    console.error('Error fetching interns:', error.code || error.message);
     res.status(500).json({ error: 'Failed to fetch interns data' });
   }
 });
@@ -2214,14 +2452,17 @@ app.get('/api/notifications/unread-count', authenticateToken, async (req, res) =
 
 app.post("/api/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = String(req.body.email || '').trim();
+    const password = String(req.body.password || '');
 
     // ✅ Basic validation
     if (!email || !password) {
       return res.status(400).json({ message: "Email and password required" });
     }
-
-    console.log("🔐 Login attempt:", email);
+    // Guessing passwords: 10 tries per 15 minutes per network, and per account
+    if (tooMany('login:' + clientIp(req), 10, 15 * 60 * 1000) || tooMany('login:' + email.toLowerCase(), 10, 15 * 60 * 1000)) {
+      return res.status(429).json({ message: "Too many sign-in attempts. Please wait 15 minutes and try again." });
+    }
 
     // ============================
     // ✅ GET USER
@@ -2243,8 +2484,9 @@ app.post("/api/login", async (req, res) => {
     if (!match) {
       return res.status(401).json({ message: "Invalid email or password" });
     }
-
-    console.log("✅ Login success:", user.role);
+    if (user.status && user.status !== 'active') {
+      return res.status(403).json({ message: "This account is not active. Please contact HR." });
+    }
 
     // ============================
     // 🔵 INTERN LOGIN LOGIC
@@ -2321,54 +2563,126 @@ app.post("/api/login", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("❌ Login error:", err);
-    res.status(500).json({
-      message: "Server error",
-      error: err.message
-    });
+    console.error("❌ Login error:", err.code || err.message);
+    res.status(500).json({ message: "Server error. Please try again." });
   }
 });
 
 
+// Old version changed any account's password with just an email address. Refuse it.
 app.post('/api/forgotpass', (req, res) => {
-  const { email, npass } = req.body;
+  res.status(410).json({ ok: false, message: 'Please refresh the page and request a reset code.' });
+});
 
-  if (!email || !npass) {
-    return res.status(400).json({ error: "Email and new password are required" });
+// Step 1: email a 6-digit code. Always answers the same, so it doesn't reveal which emails have accounts.
+app.post('/api/forgotpass/request', async (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return res.status(400).json({ ok: false, message: 'Please enter a valid email address.' });
   }
-
-  const query = `SELECT id FROM users WHERE email=?`;
-  db.query(query, [email], (err, results) => {
-    if (err) {
-      return res.status(500).json({ error: err.message });
-    }
-
-    if (results.length === 0) {
-      return res.status(404).json({ error: "No user with that email" });
-    }
-
-    // ✅ Hash the password AFTER confirming the email exists
-    const hashed_pass = bcrypt.hashSync(npass, 10);
-
-    const sql = `UPDATE users SET password_hash = ? WHERE email = ?`;
-    db.query(sql, [hashed_pass, email], (err, result) => {
-      if (err) return res.status(500).json({ error: err.message });
-
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ ok: false, message: "No user with that email" });
-      }
-
-      return res.json({ ok: true, message: "Password updated successfully" });
+  if (tooMany('reset-ip:' + clientIp(req), 10, 60 * 60 * 1000) || tooMany('reset:' + email, 3, 15 * 60 * 1000)) {
+    return res.status(429).json({ ok: false, message: 'Too many requests. Please wait 15 minutes and try again.' });
+  }
+  const reply = { ok: true, message: 'If an account exists for this email, we have sent a 6-digit code. It is valid for 10 minutes.' };
+  try {
+    const [[user]] = await executeQuery('SELECT id, full_name FROM users WHERE LOWER(email) = ?', [email]);
+    if (!user) return res.json(reply);
+    const code = String(crypto.randomInt(100000, 1000000));
+    await executeQuery('DELETE FROM password_resets WHERE email = ?', [email]);
+    await executeQuery('INSERT INTO password_resets (email, code_hash, expires_at) VALUES (?, ?, ?)',
+      [email, crypto.createHash('sha256').update(code).digest('hex'), Date.now() + 10 * 60 * 1000]);
+    await sendEmail({
+      to: email,
+      subject: 'Your InnerWhispers password reset code',
+      html: `<p>Dear ${esc(user.full_name || 'user')},</p>
+        <p>Your password reset code is:</p>
+        <p style="font-size:28px;font-weight:bold;letter-spacing:6px;font-family:monospace">${code}</p>
+        <p>It is valid for 10 minutes. If you didn't ask to reset your password, ignore this email; your password stays the same.</p>
+        <p>Best regards,<br>InnerWhispers Wellness LLP</p>`
     });
-  });
+    res.json(reply);
+  } catch (err) {
+    console.error('Reset request failed:', err.code || err.message);
+    res.status(500).json({ ok: false, message: 'Something went wrong. Please try again.' });
+  }
+});
+
+// Step 2: code + new password. Five wrong codes and the code is deleted.
+app.post('/api/forgotpass/reset', async (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const code = String(req.body.code || '').trim();
+  const npass = String(req.body.npass || '');
+  if (!/^\d{6}$/.test(code)) return res.status(400).json({ ok: false, message: 'Enter the 6-digit code from the email.' });
+  if (npass.length < 8 || npass.length > 128) return res.status(400).json({ ok: false, message: 'Your new password must be at least 8 characters.' });
+  if (tooMany('reset-check:' + clientIp(req), 20, 15 * 60 * 1000)) {
+    return res.status(429).json({ ok: false, message: 'Too many attempts. Please wait 15 minutes and try again.' });
+  }
+  try {
+    const [[rec]] = await executeQuery('SELECT id, code_hash, attempts, expires_at FROM password_resets WHERE email = ? ORDER BY id DESC LIMIT 1', [email]);
+    const wrong = (msg) => res.status(400).json({ ok: false, message: msg });
+    if (!rec || Number(rec.expires_at) < Date.now()) {
+      if (rec) await executeQuery('DELETE FROM password_resets WHERE email = ?', [email]);
+      return wrong('This code has expired or is not valid. Please request a new one.');
+    }
+    const given = crypto.createHash('sha256').update(code).digest();
+    if (!crypto.timingSafeEqual(given, Buffer.from(rec.code_hash, 'hex'))) {
+      if (rec.attempts + 1 >= 5) {
+        await executeQuery('DELETE FROM password_resets WHERE email = ?', [email]);
+        return wrong('Too many incorrect codes. Please request a new one.');
+      }
+      await executeQuery('UPDATE password_resets SET attempts = attempts + 1 WHERE id = ?', [rec.id]);
+      return wrong('Incorrect code. Please check the email and try again.');
+    }
+    await executeQuery('UPDATE users SET password_hash = ? WHERE LOWER(email) = ?', [await bcrypt.hash(npass, 10), email]);
+    await executeQuery('DELETE FROM password_resets WHERE email = ?', [email]);
+    res.json({ ok: true, message: 'Password changed successfully.' });
+  } catch (err) {
+    console.error('Password reset failed:', err.code || err.message);
+    res.status(500).json({ ok: false, message: 'Something went wrong. Please try again.' });
+  }
 });
 
 //for register
-app.post("/api/register", upload.single("profileImage"), async (req, res) => {
+app.post("/api/register", imageUpload.single("profileImage"), async (req, res) => {
   try {
-    const { username, email, password, fullname, ph, department, internRole, internid } = req.body;
+    const t = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
+    const username = t(req.body.username, 50), email = t(req.body.email, 255).toLowerCase(), fullname = t(req.body.fullname, 255);
+    const ph = t(req.body.ph, 20), internRole = t(req.body.internRole, 20), internid = t(req.body.internid, 10);
+    const password = String(req.body.password || '');
+    const role = roleOf({ role: req.body.department });
+    const department = role === 'intern' ? 'Intern' : role;
 
-    const hashed_pass = bcrypt.hashSync(password, 10);
+    if (tooMany('register:' + clientIp(req), 10, 60 * 60 * 1000)) {
+      return res.status(429).json({ message: "Too many sign-ups from this network. Please try again later." });
+    }
+    const ALLOWED_ROLES = ['intern', 'hr', 'admin', 'patient', 'psychiatry', 'psychology', 'therapy', 'counseling', 'guidance'];
+    if (!ALLOWED_ROLES.includes(role)) return res.status(400).json({ message: "Please choose a valid department." });
+    if (!username || !fullname || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ message: "Please fill in your name, username and a valid email." });
+    if (password.length < 8 || password.length > 128) return res.status(400).json({ message: "Your password must be at least 8 characters." });
+
+    // Who may create which account
+    const requester = roleOf(req.user);
+    if (role === 'admin' && requester !== 'admin') {
+      return res.status(403).json({ message: "Only an admin can create admin accounts." });
+    }
+    if (role !== 'intern' && role !== 'admin' && !HR_ROLES.includes(requester)) {
+      return res.status(403).json({ message: "Only HR can create this type of account. Please contact HR." });
+    }
+    if (role === 'intern' && !HR_ROLES.includes(requester)) {
+      // Interns sign up with the invite code HR gives them (INTERN_INVITE_CODE)
+      const expected = process.env.INTERN_INVITE_CODE || '';
+      const given = t(req.body.inviteCode, 100);
+      const same = expected && given.length === expected.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+      if (!same) return res.status(403).json({ message: "The invite code is not correct. Please check it with HR." });
+    }
+    if (role === 'intern' && !/^[A-Za-z0-9-]{2,10}$/.test(internid)) {
+      return res.status(400).json({ message: "Intern ID can only use letters, numbers and hyphens (up to 10)." });
+    }
+
+    const [[taken]] = await executeQuery('SELECT id FROM users WHERE LOWER(email) = ? OR username = ?', [email, username]);
+    if (taken) return res.status(409).json({ message: "An account with this email or username already exists." });
+
+    const hashed_pass = await bcrypt.hash(password, 10);
 
     if (!req.file) {
       return res.status(400).json({ error: "Profile image is required" });
@@ -2378,7 +2692,7 @@ app.post("/api/register", upload.single("profileImage"), async (req, res) => {
     const uploadResult = await new Promise((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         {
-          folder: `Interns/${internid}`,
+          folder: role === 'intern' ? `Interns/${internid}` : `Users/${crypto.randomBytes(8).toString('hex')}`,
           public_id: 'profile_pic',
           resource_type: 'image',
           overwrite: true
@@ -2410,8 +2724,8 @@ app.post("/api/register", upload.single("profileImage"), async (req, res) => {
     res.json({ ok: true, message: "Registration successful" });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error", details: err.message });
+    console.error('Register failed:', err.code || err.message);
+    res.status(500).json({ error: "Server error", message: "Registration failed. Please try again." });
   }
 });
 
@@ -2512,7 +2826,101 @@ app.put('/api/interns/updateintern/:id', async (req, res) => {
   }
 });
 
-app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (req, res) => {
+/* ─────────────────────────────────────────────────────────────
+   Intern profile details
+   GET  /api/interns/details/:id   read the details
+   PUT  /api/interns/details/:id   save the details (only fields listed below)
+   Only the intern who owns the profile, HR or an admin can read or change it.
+───────────────────────────────────────────────────────────── */
+const INTERN_DETAIL_FIELDS = {
+  // field: [column definition, max length, kind]
+  date_of_birth:      ['DATE NULL', 10, 'date'],
+  gender:             ['VARCHAR(30) NULL', 30],
+  address_line:       ['VARCHAR(255) NULL', 255],
+  city:               ['VARCHAR(80) NULL', 80],
+  state:              ['VARCHAR(80) NULL', 80],
+  pincode:            ['VARCHAR(10) NULL', 10, 'pincode'],
+  university:         ['VARCHAR(255) NULL', 255],
+  degree:             ['VARCHAR(100) NULL', 100],
+  branch:             ['VARCHAR(100) NULL', 100],
+  year_of_study:      ['VARCHAR(20) NULL', 20],
+  graduation_year:    ['VARCHAR(4) NULL', 4, 'year'],
+  college_roll_no:    ['VARCHAR(50) NULL', 50],
+  emergency_name:     ['VARCHAR(100) NULL', 100],
+  emergency_relation: ['VARCHAR(50) NULL', 50],
+  emergency_phone:    ['VARCHAR(15) NULL', 15, 'phone'],
+  linkedin_url:       ['VARCHAR(255) NULL', 255, 'url'],
+  portfolio_url:      ['VARCHAR(255) NULL', 255, 'url'],
+  skills:             ['VARCHAR(500) NULL', 500],
+  bio:                ['VARCHAR(500) NULL', 500]
+};
+// "university" already exists in the table, so it is not re-created
+const INTERN_DETAIL_COLUMNS = Object.entries(INTERN_DETAIL_FIELDS)
+  .filter(([k]) => k !== 'university')
+  .map(([k, v]) => [k, v[0]]);
+
+async function canAccessIntern(req, internId) {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (role === 'admin' || role === 'hr') return true;
+  if (!req.user?.id) return false;
+  const [rows] = await executeQuery(
+    'SELECT 1 FROM users u JOIN Interns i ON LOWER(u.email) = LOWER(i.email) WHERE u.id = ? AND i.intern_id = ? LIMIT 1',
+    [req.user.id, internId]
+  );
+  return rows.length > 0;
+}
+
+app.get('/api/interns/details/:id', authenticateToken, async (req, res) => {
+  try {
+    if (!(await canAccessIntern(req, req.params.id))) return res.status(403).json({ message: 'Not allowed' });
+    const cols = Object.keys(INTERN_DETAIL_FIELDS).map(c => '`' + c + '`').join(', ');
+    const [rows] = await executeQuery(
+      'SELECT ' + cols + ', start_date, end_date FROM Interns WHERE intern_id = ?',
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Intern not found' });
+    const r = rows[0];
+    const ymd = d => (d instanceof Date ? d.toISOString().slice(0, 10) : (d || null));
+    r.date_of_birth = ymd(r.date_of_birth);
+    r.start_date = ymd(r.start_date);
+    r.end_date = ymd(r.end_date);
+    res.json(r);
+  } catch (err) {
+    console.error('GET intern details:', err);
+    res.status(500).json({ message: 'Could not load details' });
+  }
+});
+
+app.put('/api/interns/details/:id', authenticateToken, async (req, res) => {
+  try {
+    if (!(await canAccessIntern(req, req.params.id))) return res.status(403).json({ message: 'Not allowed' });
+    const body = req.body || {};
+    const sets = [], vals = [], errors = {};
+    for (const [field, [, max, kind]] of Object.entries(INTERN_DETAIL_FIELDS)) {
+      if (!(field in body)) continue;
+      let v = body[field] == null ? '' : String(body[field]).trim();
+      if (v.length > max) errors[field] = 'Must be ' + max + ' characters or fewer';
+      else if (v && kind === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(v)) errors[field] = 'Use the format YYYY-MM-DD';
+      else if (v && kind === 'pincode' && !/^\d{6}$/.test(v)) errors[field] = 'PIN code must be 6 digits';
+      else if (v && kind === 'year' && !/^(19|20)\d{2}$/.test(v)) errors[field] = 'Enter a 4-digit year';
+      else if (v && kind === 'phone' && v.replace(/\D/g, '').length < 10) errors[field] = 'Phone must have at least 10 digits';
+      else if (v && kind === 'url' && !/^https?:\/\/\S+$/i.test(v)) errors[field] = 'Links must start with http:// or https://';
+      sets.push('`' + field + '` = ?');
+      vals.push(v === '' ? null : v);
+    }
+    if (Object.keys(errors).length) return res.status(400).json({ message: 'Please check the highlighted fields', errors });
+    if (!sets.length) return res.status(400).json({ message: 'Nothing to update' });
+    vals.push(req.params.id);
+    const [result] = await executeQuery('UPDATE Interns SET ' + sets.join(', ') + ' WHERE intern_id = ?', vals);
+    if (!result.affectedRows) return res.status(404).json({ message: 'Intern not found' });
+    res.json({ ok: true, message: 'Details saved' });
+  } catch (err) {
+    console.error('PUT intern details:', err);
+    res.status(500).json({ message: 'Could not save details' });
+  }
+});
+
+app.put("/api/interns/updateimage/:id", imageUpload.single("profileImage"), async (req, res) => {
   const internId = req.params.id;
 
   try {
@@ -2589,84 +2997,50 @@ app.put("/api/interns/updateimage/:id", upload.single("profileImage"), async (re
 
 app.get('/api/insterdashboard-stats', async (req, res) => {
   try {
-    const intern_id = req.query.intern_id; // use query param
+    const intern_id = req.query.intern_id;
     if (!intern_id) return res.status(400).json({ message: "intern_id is required" });
 
-    const today = new Date().toISOString().split('T')[0];
+    const [[today]] = await executeQuery(
+      'SELECT check_in, check_out, status, hours_worked FROM Attendance WHERE intern_id = ? AND attendance_date = ?',
+      [intern_id, getTodayIST()]);
+    const [[allTime]] = await executeQuery(`SELECT ${ATT_COUNTS} FROM Attendance WHERE intern_id = ?`, [intern_id]);
+    const [[month]] = await executeQuery(
+      `SELECT ${ATT_COUNTS} FROM Attendance WHERE intern_id = ? AND attendance_date >= DATE_FORMAT(?, '%Y-%m-01')`,
+      [intern_id, getTodayIST()]);
+    const [[tasks]] = await executeQuery(
+      "SELECT COUNT(*) AS total, COALESCE(SUM(status = 'Completed'), 0) AS done FROM Tasks WHERE intern_id = ?", [intern_id]);
 
-    // 1. Check-in/out today
-    const checkinout = await new Promise((resolve, reject) => {
-      db.query(
-        `SELECT check_in, check_out 
-                 FROM Attendance 
-                 WHERE intern_id = ? AND attendance_date = ?`,
-        [intern_id, today],
-        (err, results) => {
-          if (err) reject(err);
-          else resolve(results[0] || null); // return first row or null
-        }
-      );
-    });
-
-    // 2. Attendance summary
-    const attdata = await new Promise((resolve, reject) => {
-      db.query(
-        `SELECT 
-                    SUM(CASE WHEN status='Present' THEN 1 ELSE 0 END) AS total_present,
-                    SUM(CASE WHEN status='Absent' THEN 1 ELSE 0 END) AS total_absent,
-                    SUM(CASE WHEN status='Leave' THEN 1 ELSE 0 END) AS total_leave
-                 FROM Attendance
-                 WHERE intern_id = ?`,
-        [intern_id],
-        (err, results) => {
-          if (err) reject(err);
-          else resolve(results[0] || null);
-        }
-      );
-    });
-
-    // 3. Performance score
-    const perresults = await new Promise((resolve, reject) => {
-      db.query(
-        `SELECT 
-                    ((SUM(CASE WHEN status='Present' THEN 1 ELSE 0 END) * 1) +
-                     (SUM(CASE WHEN status='Leave' THEN 1 ELSE 0 END) * 0.5) +
-                     (SUM(Case when status='Absent' Then 1 Else 0 End)*0.5))
-                     / COUNT(*) * 100 AS performance_score,
-
-                    ((SUM(CASE WHEN status='Present' THEN 1 ELSE 0 END) * 1) +
-                    (SUM(CASE WHEN status='Leave' THEN 1 ELSE 0 END) * 0.5)+
-                    (SUM(Case when status='Absent' Then 1 Else 0 End)*0.6)) 
-                    / COUNT(*) * 100 AS monthly_performance_score
-                    
-
-                 FROM Attendance
-                 WHERE intern_id = ? 
-                    AND MONTH(attendance_date) = MONTH(CURDATE())
-                    AND YEAR(attendance_date) = YEAR(CURDATE())`,
-        [intern_id],
-        (err, results) => {
-          if (err) reject(err);
-          else resolve(results[0] || {
-            monthly_attendance_percentage: 0,
-            monthly_performance_score: 0,
-            monthly_present: 0,
-            monthly_absent: 0,
-            monthly_leave: 0
-          });
-        }
-      );
-    });
+    const all = internScores(allTime, tasks);
+    const m = internScores(month, tasks);
 
     res.json({
-      checkinout,
-      attendance_summary: attdata,
-      performance_summary: perresults
+      checkinout: today || {},
+      attendance_summary: {
+        total_present: all.attended,          // days attended (on time + late)
+        total_on_time: all.present,
+        total_late: all.late,
+        total_absent: all.absent,
+        total_leave: all.leave,
+        attendance_percentage: all.attendance,
+        punctuality_percentage: all.punctuality
+      },
+      performance_summary: {
+        performance_score: m.performance,     // this month: attendance and tasks
+        monthly_performance_score: m.attendance, // shown as "Attendance" on the dashboard
+        monthly_attendance_percentage: m.attendance,
+        monthly_punctuality_percentage: m.punctuality,
+        monthly_present: m.attended,
+        monthly_late: m.late,
+        monthly_absent: m.absent,
+        monthly_leave: m.leave,
+        tasks_completed: m.doneTasks,
+        tasks_total: m.totalTasks,
+        task_completion_percentage: m.tasks
+      }
     });
-
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "DB error", error: err });
+    console.error('Dashboard stats failed:', err.code || err.message);
+    res.status(500).json({ message: "DB error" });
   }
 });
 
@@ -2718,7 +3092,7 @@ app.get('/api/attendance/weekly', async (req, res) => {
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "DB error", error: err });
+    res.status(500).json({ message: "DB error"});
   }
 });
 
@@ -2729,40 +3103,22 @@ app.get('/api/attendance/monthly', async (req, res) => {
   try {
     const intern_id = req.query.intern_id;
     if (!intern_id) return res.status(400).json({ message: "intern_id required" });
-
-    const results = await new Promise((resolve, reject) => {
-      db.query(
-        `SELECT 
-                    COALESCE(SUM(CASE WHEN status='Present' THEN 1 ELSE 0 END), 0) AS present,
-                    COALESCE(SUM(CASE WHEN status='Absent' THEN 1 ELSE 0 END), 0) AS absent,
-                    COALESCE(SUM(CASE WHEN status='Leave' THEN 1 ELSE 0 END), 0) AS leave_days,
-                    COUNT(*) AS total
-                 FROM Attendance
-                 WHERE intern_id = ?
-                   AND MONTH(attendance_date) = MONTH(CURDATE())
-                   AND YEAR(attendance_date) = YEAR(CURDATE())`,
-        [intern_id],
-        (err, rows) => {
-          if (err) reject(err);
-          else resolve(rows[0]);
-        }
-      );
-    });
-
-    const monthlyPercentage = results.total > 0
-      ? ((results.present + 0.5 * results.leave_days) / results.total) * 100
-      : 0;
-
+    const [[month]] = await executeQuery(
+      `SELECT ${ATT_COUNTS} FROM Attendance WHERE intern_id = ? AND attendance_date >= DATE_FORMAT(?, '%Y-%m-01')`,
+      [intern_id, getTodayIST()]);
+    const m = internScores(month, null);
     res.json({
-      present: results.present,
-      absent: results.absent,
-      leave: results.leave_days,
-      monthly_percentage: parseFloat(monthlyPercentage.toFixed(2))
+      present: m.attended,      // attended (on time + late)
+      on_time: m.present,
+      late: m.late,
+      absent: m.absent,
+      leave: m.leave,
+      monthly_percentage: m.attendance,
+      punctuality_percentage: m.punctuality
     });
-
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "DB error", error: err });
+    console.error('Monthly attendance failed:', err.code || err.message);
+    res.status(500).json({ message: "DB error" });
   }
 });
 
@@ -2777,9 +3133,10 @@ function getTodayIST() {
 }
 
 app.post('/api/checkout', (req, res) => {
-  const { intern_id, check_out } = req.body;
+  const { intern_id } = req.body;
   const attendance_date = getTodayIST();
-  const checkOutTime = check_out || new Date().toISOString().slice(11, 19);
+  // Always the server's clock in India time (it was UTC before, and interns could send any time)
+  const checkOutTime = nowTimeIST();
 
   if (!intern_id) {
     return res.status(400).json({ message: 'intern_id is required' });
@@ -2792,7 +3149,7 @@ app.post('/api/checkout', (req, res) => {
     (err, results) => {
       if (err) {
         console.error('DB error:', err);
-        return res.status(500).json({ message: 'DB error', error: err.message });
+        return res.status(500).json({ message: 'DB error'});
       }
 
       if (results.length === 0) {
@@ -2806,12 +3163,14 @@ app.post('/api/checkout', (req, res) => {
 
       // Proceed with checkout update
       db.query(
-        'UPDATE Attendance SET check_out = ? WHERE intern_id = ? AND attendance_date = ?',
-        [checkOutTime, intern_id, attendance_date],
+        `UPDATE Attendance SET check_out = ?,
+           hours_worked = IF(check_in IS NULL, 0, GREATEST(0, ROUND(TIME_TO_SEC(TIMEDIFF(?, check_in)) / 3600, 2)))
+         WHERE intern_id = ? AND attendance_date = ?`,
+        [checkOutTime, checkOutTime, intern_id, attendance_date],
         (err, result) => {
           if (err) {
             console.error('DB error:', err);
-            return res.status(500).json({ message: 'DB error', error: err.message });
+            return res.status(500).json({ message: 'DB error'});
           }
           //2change
           // Emit real-time checkout update
@@ -2845,7 +3204,7 @@ app.get('/api/attendance-status/:intern_id', (req, res) => {
     (err, results) => {
       if (err) {
         console.error('DB error:', err);
-        return res.status(500).json({ message: 'DB error', error: err.message });
+        return res.status(500).json({ message: 'DB error'});
       }
       if (results.length === 0) {
         return res.status(404).json({ message: 'No attendance record found for today' });
@@ -2896,7 +3255,7 @@ app.get("/api/tasks/all", async (req, res) => {
       progress: row.progress ?? 0, // default 0%
       collaboration: row.collaboration || "None",
       assignedDueDate: row.assignedDueDate || "", // already formatted by MySQL
-      status: row.status || "pending"
+      status: taskStatusForPage(row.status)
     }));
 
     console.log(tasks);
@@ -2904,7 +3263,7 @@ app.get("/api/tasks/all", async (req, res) => {
 
   } catch (err) {
     console.error("Error fetching tasks:", err);
-    res.status(500).json({ message: "DB error", error: err });
+    res.status(500).json({ message: "DB error"});
   }
 });
 
@@ -2922,7 +3281,7 @@ app.get('/api/gettasks/:intern_id', (req, res) => {
   db.query(query, [intern_id], (err, result) => {
     if (err) {
       console.error("DB Fetch Error:", err);
-      return res.status(500).json({ message: "Database error", error: err });
+      return res.status(500).json({ message: "Database error"});
     }
     console.log(result)
     // Transform to frontend format
@@ -2930,7 +3289,8 @@ app.get('/api/gettasks/:intern_id', (req, res) => {
       id: task.task_id,
       title: task.task_title,
       dueDate: task.due_date,
-      status: task.status,
+      due_date: task.due_date,          // the dashboard reads due_date
+      status: taskStatusForPage(task.status),
       priority: task.priority
     }));
 
@@ -2950,10 +3310,11 @@ app.post('/api/addtask', (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?)
     `;
 
-  db.query(query, [intern_id, task_title, task_description, priority, status, assignedDate, dueDate], (err, result) => {
+  const dbStatus = TASK_STATUS_DB[taskStatusForPage(status)] || 'Pending';
+  db.query(query, [intern_id, String(task_title || '').slice(0, 150), task_description, priority, dbStatus, assignedDate, dueDate], (err, result) => {
     if (err) {
       console.error("DB Error:", err);
-      return res.status(500).json({ message: err });
+      return res.status(500).json({ message: 'Internal Server Error' });
     }
     console.log("DB Insert Result:", result);
     return res.json({ message: "Task added successfully", result });
@@ -2966,22 +3327,22 @@ app.put('/api/changetask/:taskId', (req, res) => {
   const taskId = req.params.taskId;
   const { status } = req.body;
 
-  // Validate status
-  const validStatuses = ['pending', 'in-progress', 'completed'];
-  if (!validStatuses.includes(status)) {
+  // Validate status ('in-progress' used to fail: the database calls it 'In Progress')
+  const dbStatus = TASK_STATUS_DB[taskStatusForPage(status)];
+  if (!dbStatus) {
     return res.status(400).json({ message: 'Invalid status value' });
   }
 
   const query = `
         UPDATE Tasks
-        SET status = ?
+        SET status = ?, progress = CASE WHEN ? = 'Completed' THEN 100 ELSE progress END
         WHERE task_id = ?
     `;
 
-  db.query(query, [status, taskId], (err, result) => {
+  db.query(query, [dbStatus, dbStatus, taskId], (err, result) => {
     if (err) {
       console.error("DB Update Error:", err);
-      return res.status(500).json({ message: 'Database error', error: err });
+      return res.status(500).json({ message: 'Database error'});
     }
 
     if (result.affectedRows === 0) {
@@ -3285,34 +3646,15 @@ app.post('/api/reports/upload', async (req, res) => {
 
 // GET /api/reports/download/:id
 // Download a report file by report ID
+// Files are stored as web links (Cloudinary, Drive). Only redirect to http(s) links; never read the server's disk.
 app.get('/api/reports/download/:id', (req, res) => {
-  const id = req.params.id;
-  db.query('SELECT report_title, file_path FROM Reports WHERE id = ?', [id], (err, rows) => {
+  db.query('SELECT file_path FROM Reports WHERE id = ?', [req.params.id], (err, rows) => {
     if (err) return res.status(500).json({ error: 'Failed to fetch report' });
     if (rows.length === 0) return res.status(404).json({ error: 'Report not found' });
-    const { file_path, report_title } = rows[0];
-    const fullPath = path.join(__dirname, file_path);
-    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
-    res.download(fullPath, report_title);
+    const link = String(rows[0].file_path || '');
+    if (!/^https?:\/\//i.test(link)) return res.status(404).json({ error: 'File not found' });
+    res.redirect(link);
   });
-});
-
-// GET /api/reports/download-file
-// Download a report file by file path
-app.get('/api/reports/download-file', (req, res) => {
-  const filePath = req.query.path;
-  if (!filePath) {
-    return res.status(400).json({ error: 'File path is required' });
-  }
-
-  const fullPath = path.join(__dirname, filePath);
-  if (!fs.existsSync(fullPath)) {
-    return res.status(404).json({ error: 'File not found' });
-  }
-
-  // Get filename from path
-  const fileName = filePath.split('/').pop() || 'report';
-  res.download(fullPath, fileName);
 });
 
 // PUT /api/reports/:id/status
@@ -3337,41 +3679,6 @@ app.put('/api/reports/:id/status', async (req, res) => {
   }
 });
 
-// Debug endpoint to check Reports table data
-app.get('/api/debug/reports', (req, res) => {
-  const sql = `
-    SELECT 
-      id,
-      intern_id,
-      report_title,
-      DATE(submitted_at) as submitted_date,
-      DAYOFWEEK(submitted_at) as day_of_week,
-      DAYNAME(submitted_at) as day_name,
-      file_path,
-      status
-    FROM Reports 
-    ORDER BY submitted_at DESC 
-    LIMIT 10
-  `;
-
-  db.query(sql, (err, rows) => {
-    if (err) {
-      console.error('Debug query error:', err);
-      return res.status(500).json({ error: 'Debug query failed' });
-    }
-
-    console.log('=== DEBUG: Reports Table Data ===');
-    console.log('Number of recent reports:', rows.length);
-    console.log('Sample reports:', rows);
-
-    res.json({
-      message: 'Debug data from Reports table',
-      count: rows.length,
-      data: rows
-    });
-  });
-});
-
 // Update the dashboard stats endpoint
 app.get('/api/dashboard-stats', async (req, res) => {
   try {
@@ -3387,7 +3694,7 @@ app.get('/api/dashboard-stats', async (req, res) => {
     const [results] = await executeQuery(query, [todayIST]);
     res.json(results[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
@@ -3414,7 +3721,7 @@ app.post('/api/submitreport', async (req, res) => {
     res.json({ message: 'Report submitted successfully', reportId: result.insertId, report_type: finalReportType });
   } catch (err) {
     console.error("DB Insert Error:", err);
-    res.status(500).json({ message: 'Database error', error: err });
+    res.status(500).json({ message: 'Database error'});
   }
 });
 
@@ -3516,9 +3823,7 @@ app.post('/api/appointments', (req, res) => {
     if (err) {
       console.error('Database error:', err);
       res.status(500).json({
-        error: 'Could not save appointment',
-        details: err.message
-      });
+        error: 'Could not save appointment'});
       return;
     }
 
@@ -3645,13 +3950,16 @@ app.get("/api/dashboard_ui/:id", (req, res) => {
 //api to update the dashboard_ui
 app.put("/api/dashboard_ui/:id", (req, res) => {
   const doctorId = req.params.id;
-  const fields = req.body;
+  const NUMERIC = ['patients_count', 'appointments_today', 'pending_confirmations', 'reports_to_finalize', 'prescriptions', 'follow_ups_needed', 'unread_messages'];
+  const fields = {};
+  for (const k of NUMERIC) if (k in req.body && Number.isInteger(Number(req.body[k]))) fields[k] = Number(req.body[k]);
+  if (typeof req.body.mood_trend === 'string') fields.mood_trend = req.body.mood_trend.slice(0, 20);
   if (Object.keys(fields).length === 0) {
     return res.status(400).json({ message: "No fields provided to update" });
   }
 
   db.query("UPDATE doctor_ui SET ? WHERE doctor_id = ?", [fields, doctorId], (err, results) => {
-    if (err) return res.status(500).json({ message: "DB error", error: err });
+    if (err) return res.status(500).json({ message: "DB error"});
 
     if (results.affectedRows === 0) {
       return res.status(404).json({ message: "Doctor not found" });
@@ -3713,7 +4021,7 @@ app.get('/api/attendance', async (req, res) => {
     res.json({ attendanceByDay, year: parseInt(year, 10), month: parseInt(month, 10) });
   } catch (error) {
     console.error('Error fetching attendance:', error);
-    res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    res.status(500).json({ error: 'Internal Server Error'});
   }
 });
 
@@ -3765,8 +4073,10 @@ app.post('/api/attendance/checkinout', async (req, res) => {
       if (!attendance.check_out) {
         // Check-out: update record with check_out = now
         await executeQuery(
-          'UPDATE Attendance SET check_out = ? WHERE id = ?',
-          [nowTime, attendance.id]
+          `UPDATE Attendance SET check_out = ?,
+             hours_worked = IF(check_in IS NULL, 0, GREATEST(0, ROUND(TIME_TO_SEC(TIMEDIFF(?, check_in)) / 3600, 2)))
+           WHERE id = ?`,
+          [nowTime, nowTime, attendance.id]
         );
         return res.json({ action: 'checkout', checkIn: attendance.check_in, checkOut: nowTime });
       } else {
@@ -3776,7 +4086,7 @@ app.post('/api/attendance/checkinout', async (req, res) => {
     }
   } catch (error) {
     console.error('Error in check-in/out:', error);
-    res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    res.status(500).json({ error: 'Internal Server Error'});
   }
 });
 
@@ -3823,7 +4133,7 @@ app.get('/api/attendance/insights', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching attendance insights:', error);
-    res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    res.status(500).json({ error: 'Internal Server Error'});
   }
 });
 
@@ -3913,7 +4223,7 @@ app.get('/api/intern/performance', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching performance:', error);
-    res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    res.status(500).json({ error: 'Internal Server Error'});
   }
 });
 app.get('/api/intern/performance/insights', async (req, res) => {
@@ -3954,7 +4264,7 @@ app.get('/api/intern/performance/insights', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching performance insights:', error);
-    res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    res.status(500).json({ error: 'Internal Server Error'});
   }
 });
 
@@ -4017,7 +4327,11 @@ app.post('/api/leave-requests', async (req, res) => {
     }
 
     // Send email notification to HR
-    const hrSubject = `New Leave Application: ${internDetails.name || intern_id} (${typeVal})`;
+    const hrSubject = `New Leave Application: ${String(internDetails.name || intern_id).replace(/[\r\n]+/g, ' ')} (${String(typeVal).replace(/[\r\n]+/g, ' ')})`;
+    // Escaped copies for the email HTML
+    internDetails = Object.fromEntries(Object.entries(internDetails).map(([k, v]) => [k, esc(v)]));
+    const e_ = { intern_id: esc(intern_id), typeVal: esc(typeVal), from_date: esc(from_date), to_date: esc(to_date), days: esc(number_of_working_days),
+      reason: esc(reason), reporting_lead: esc(reporting_lead), handover_note: esc(handover_note) };
     const hrHtml = `
 <!DOCTYPE html>
 <html>
@@ -4029,19 +4343,19 @@ app.post('/api/leave-requests', async (req, res) => {
     
     <p>Dear <strong>HR Team</strong>,</p>
     
-    <p>A new leave application has been submitted by <strong>${internDetails.name || 'Intern'}</strong> (${intern_id}).</p>
+    <p>A new leave application has been submitted by <strong>${internDetails.name || 'Intern'}</strong> (${e_.intern_id}).</p>
     
     <p><strong>Leave Application Details:</strong></p>
     <ul style="margin: 10px 0 16px 0; padding-left: 20px;">
-      <li><strong>Intern Name:</strong> ${internDetails.name || 'N/A'} (${intern_id})</li>
+      <li><strong>Intern Name:</strong> ${internDetails.name || 'N/A'} (${e_.intern_id})</li>
       <li><strong>Department/Role:</strong> ${internDetails.department || internDetails.internrole || 'N/A'}</li>
       <li><strong>Intern Email:</strong> ${internDetails.email || 'N/A'}</li>
       ${internDetails.phone ? `<li><strong>Phone:</strong> ${internDetails.phone}</li>` : ''}
-      <li><strong>Leave Type:</strong> ${typeVal}</li>
-      <li><strong>Duration / Dates:</strong> ${from_date} to ${to_date} (${number_of_working_days} day(s))</li>
-      <li><strong>Reason:</strong> ${reason}</li>
-      ${reporting_lead ? `<li><strong>Reporting Lead:</strong> ${reporting_lead}</li>` : ''}
-      ${handover_note ? `<li><strong>Handover Note:</strong> ${handover_note}</li>` : ''}
+      <li><strong>Leave Type:</strong> ${e_.typeVal}</li>
+      <li><strong>Duration / Dates:</strong> ${e_.from_date} to ${e_.to_date} (${e_.days} day(s))</li>
+      <li><strong>Reason:</strong> ${e_.reason}</li>
+      ${reporting_lead ? `<li><strong>Reporting Lead:</strong> ${e_.reporting_lead}</li>` : ''}
+      ${handover_note ? `<li><strong>Handover Note:</strong> ${e_.handover_note}</li>` : ''}
     </ul>
 
     <p>Please log in to the HR Dashboard to review and respond to this request.</p>
@@ -4064,7 +4378,7 @@ app.post('/api/leave-requests', async (req, res) => {
     res.json({ message: 'Leave request submitted successfully' });
   } catch (error) {
     console.error('Error creating leave request:', error);
-    res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    res.status(500).json({ error: 'Internal Server Error'});
   }
 });
 
@@ -4093,7 +4407,7 @@ app.get('/api/leave-requests/:intern_id?', async (req, res) => {
     res.json(rows);
   } catch (error) {
     console.error('Error fetching leave requests:', error);
-    res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    res.status(500).json({ error: 'Internal Server Error'});
   }
 });
 
@@ -4177,17 +4491,17 @@ app.put('/api/leave-requests/:id/status', async (req, res) => {
 <body style="font-family: Arial, Helvetica, sans-serif; font-size: 15px; line-height: 1.6; color: #222222; margin: 0; padding: 20px; background-color: #ffffff;">
   <div style="max-width: 650px; margin: 0; padding: 0;">
     
-    <p>Dear <strong>${internName}</strong>,</p>
+    <p>Dear <strong>${esc(internName)}</strong>,</p>
     
     <p>Your leave request has been reviewed by the HR team and marked as <strong>${status.toUpperCase()}</strong>.</p>
     
     <p><strong>Leave Application Details:</strong></p>
     <ul style="margin: 10px 0 16px 0; padding-left: 20px;">
-      <li><strong>Leave Type:</strong> ${leave.leave_type || 'Casual Leave'}</li>
-      <li><strong>Duration / Dates:</strong> ${leave.from_date} to ${leave.to_date} (${leave.number_of_working_days} day(s))</li>
-      <li><strong>Reason:</strong> ${leave.reason || '—'}</li>
+      <li><strong>Leave Type:</strong> ${esc(leave.leave_type || 'Casual Leave')}</li>
+      <li><strong>Duration / Dates:</strong> ${leave.from_date} to ${leave.to_date} (${esc(leave.number_of_working_days)} day(s))</li>
+      <li><strong>Reason:</strong> ${esc(leave.reason || '—')}</li>
       <li><strong>Status:</strong> ${status}</li>
-      ${remarksVal ? `<li><strong>HR Remarks:</strong> ${remarksVal}</li>` : ''}
+      ${remarksVal ? `<li><strong>HR Remarks:</strong> ${esc(remarksVal)}</li>` : ''}
     </ul>
 
     <p>If you have any questions regarding this decision, please feel free to reply to this email or contact the HR team at <a href="mailto:${DEFAULT_HR_EMAIL}" style="color: #0056b3;">${DEFAULT_HR_EMAIL}</a>.</p>
@@ -4218,7 +4532,7 @@ app.put('/api/leave-requests/:id/status', async (req, res) => {
     res.json({ message: `Leave request ${status.toLowerCase()} successfully` });
   } catch (error) {
     console.error('Error updating leave request:', error);
-    res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    res.status(500).json({ error: 'Internal Server Error'});
   }
 });
 
@@ -4432,13 +4746,9 @@ app.get('/api/documents/download/:id', (req, res) => {
     }
     if (rows.length === 0) return res.status(404).json({ error: 'Document not found' });
 
-    const doc = rows[0];
-    if (doc.file_path.startsWith('http')) return res.redirect(doc.file_path);
-
-    const fullPath = path.join(__dirname, doc.file_path);
-    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found on server' });
-
-    res.download(fullPath, doc.doc_title);
+    const link = String(rows[0].file_path || '');
+    if (!/^https?:\/\//i.test(link)) return res.status(404).json({ error: 'File not found' });
+    res.redirect(link);
   });
 });
 
@@ -4510,9 +4820,7 @@ app.post('/api/appointments', (req, res) => {
     if (err) {
       console.error('Database error:', err);
       res.status(500).json({
-        error: 'Could not save appointment',
-        details: err.message
-      });
+        error: 'Could not save appointment'});
       return;
     }
 
@@ -4563,7 +4871,7 @@ app.get('/api/appointments/:id', (req, res) => {
   db.query(query, [id], (err, results) => {
     if (err) {
       console.error('Database error:', err);
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: 'Internal Server Error' });
       return;
     }
     res.json(results);
@@ -4580,7 +4888,7 @@ app.put('/api/appointments/:doc_id/:id/status', (req, res) => {
 
     (err) => {
       if (err) {
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: 'Internal Server Error' });
         return;
       }
       res.json({ message: 'Status updated successfully' });
@@ -4626,7 +4934,7 @@ app.put('/api/appointments/:doc_id/:id/reschedule', (req, res) => {
     [appointment_date, time24, doc_id, id],
     (err) => {
       if (err) {
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: 'Internal Server Error' });
         return;
       }
       res.json({ message: 'Appointment rescheduled successfully' });
@@ -4652,7 +4960,7 @@ app.get('/api/patients', (req, res) => {
 
   db.query(query, (err, results) => {
     if (err) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: 'Internal Server Error' });
       return;
     }
     res.json(results);
@@ -4687,7 +4995,7 @@ app.post('/api/prescriptions', (req, res) => {
     notes
   ], (err, result) => {
     if (err) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: 'Internal Server Error' });
       return;
     }
     res.status(201).json({
@@ -4705,7 +5013,7 @@ app.get('/api/prescriptions', (req, res) => {
 
   db.query(query, (err, results) => {
     if (err) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: 'Internal Server Error' });
       return;
     }
     res.json(results);
@@ -4723,7 +5031,7 @@ app.get('/api/prescriptions/:id', (req, res) => {
 
   db.query(query, [id], (err, results) => {
     if (err) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: 'Internal Server Error' });
       return;
     }
 
@@ -4751,7 +5059,7 @@ app.get('/api/prescriptions/search', (req, res) => {
 
   db.query(query, [searchTerm, searchTerm], (err, results) => {
     if (err) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: 'Internal Server Error' });
       return;
     }
     res.json(results);
@@ -4853,7 +5161,8 @@ app.get('/api/summary', (req, res) => {
 
 app.get('/api/expenseSummary', (req, res) => {
   const { category } = req.query; // e.g., ?category=HR
-  const categoryFilter = category && category !== 'All' ? `AND category='${category}'` : '';
+  const categoryFilter = category && category !== 'All' ? 'AND category = ?' : '';
+  const catParams = categoryFilter ? [String(category)] : [];
 
   const expenseSummaryQuery = `
     SELECT 
@@ -4880,7 +5189,7 @@ app.get('/api/expenseSummary', (req, res) => {
     GROUP BY category
   `;
 
-  db.query(expenseSummaryQuery, (err, expenseRows) => {
+  db.query(expenseSummaryQuery, catParams, (err, expenseRows) => {
     if (err) {
       console.error(err);
       return res.status(500).json({ error: 'Error fetching expense summary' });
@@ -4888,7 +5197,7 @@ app.get('/api/expenseSummary', (req, res) => {
 
     const expenseData = expenseRows[0];
     console.log(expenseData)
-    db.query(monthlyQuery, (err2, monthlyRows) => {
+    db.query(monthlyQuery, catParams, (err2, monthlyRows) => {
       if (err2) {
         console.error(err2);
         return res.status(500).json({ error: 'Error fetching monthly expenses' });
@@ -5234,7 +5543,18 @@ app.put('/api/settings', (req, res) => {
   });
 });
 
-// Start the server
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
+
+
+/* ------------------------------
+   Final error handler (must stay after every route)
+------------------------------- */
+app.use((err, req, res, next) => {
+  if (err && err.message && err.message.includes('Only images and PDF')) {
+    return res.status(400).json({ error: err.message, message: err.message });
+  }
+  if (err && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({ error: 'The file is larger than 5 MB.', message: 'The file is larger than 5 MB.' });
+  }
+  console.error('Unhandled error:', err && (err.code || err.message));
+  res.status(500).json({ error: 'Internal Server Error', message: 'Something went wrong. Please try again.' });
 });
