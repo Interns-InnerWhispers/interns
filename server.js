@@ -2411,7 +2411,7 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
 
     const [rows] = await executeQuery(`
             SELECT id, notify as title, description, type, target_user_id, target_role, is_read as isRead, 
-                   created_at as createdAt
+                   created_at as createdAt, UNIX_TIMESTAMP(created_at) AS createdTs
             FROM Notifications 
             ${whereClause}
             ORDER BY created_at DESC
@@ -3175,7 +3175,7 @@ app.get('/api/support/tickets', async (req, res) => {
     if (status) { where.push('t.status = ?'); params.push(status); }
     const [rows] = await executeQuery(`
       SELECT t.id, t.subject, t.category, t.status, t.requester_name, t.requester_role, t.intern_id, t.unread_for_user,
-             t.created_at, t.updated_at,
+             t.created_at, t.updated_at, UNIX_TIMESTAMP(t.created_at) AS created_ts, UNIX_TIMESTAMP(t.updated_at) AS updated_ts,
              (SELECT body FROM support_messages m WHERE m.ticket_id = t.id ORDER BY m.id DESC LIMIT 1) AS last_message
       FROM support_tickets t ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY FIELD(t.status, 'Open', 'Answered', 'Closed'), t.updated_at DESC
@@ -3225,11 +3225,12 @@ app.get('/api/support/tickets/:id/messages', async (req, res) => {
     const t = await ticketFor(req, req.params.id);
     if (!t) return res.status(404).json({ message: 'Ticket not found' });
     const [msgs] = await executeQuery(
-      'SELECT id, from_staff, sender_name, body, created_at, (sender_user_id = ?) AS mine FROM support_messages WHERE ticket_id = ? ORDER BY id',
+      'SELECT id, from_staff, sender_name, body, created_at, UNIX_TIMESTAMP(created_at) AS created_ts, (sender_user_id = ?) AS mine FROM support_messages WHERE ticket_id = ? ORDER BY id',
       [req.user.id, t.id]);
     if (!isStaff(req) && t.unread_for_user) await executeQuery('UPDATE support_tickets SET unread_for_user = 0 WHERE id = ?', [t.id]);
+    const [[ts]] = await executeQuery('SELECT UNIX_TIMESTAMP(created_at) AS c FROM support_tickets WHERE id = ?', [t.id]);
     res.json({ ticket: { id: t.id, subject: t.subject, category: t.category, status: t.status, requester_name: t.requester_name,
-      intern_id: t.intern_id, created_at: t.created_at }, staff: isStaff(req), messages: msgs });
+      intern_id: t.intern_id, created_at: t.created_at, created_ts: ts && ts.c }, staff: isStaff(req), messages: msgs });
   } catch (err) {
     console.error('Load ticket failed:', err.code || err.message);
     res.status(500).json({ message: 'Could not load the conversation' });
